@@ -1,0 +1,25 @@
+# macOS with Nix package manager: full disk image with Nix installed
+# via the official installer and home-manager configured.
+#
+# Build:  mackit build      (interactive: complete setup via VNC)
+# Boot:   mackit start      (SSH: ssh -p 20022 root@127.0.0.1)
+# Verify: nix --version     (inside the macOS guest)
+#
+# The Nix installer requires curl and a shell, both available in
+# macOS by default. Rosetta is installed first on ARM64 guests to
+# support x86_64 Nix packages.
+
+from: macos/sequoia
+
+hostname: mackit-nix
+
+commands:
+  firstboot:
+    - systemsetup -setremotelogin on
+  boot:
+    - cmd: softwareupdate --install-rosetta --agree-to-license
+      valid-exit-codes: [0, 1]
+    - cmd: "sh <(curl -L https://nixos.org/nix/install) --daemon --yes"
+      timeout: 15m
+    - cmd: "source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix --version"
+      timeout: 2m

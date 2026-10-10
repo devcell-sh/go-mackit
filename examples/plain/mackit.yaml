@@ -1,0 +1,15 @@
+# Plain macOS install: full disk image with SSH enabled and basic
+# post-install configuration. No extra tooling.
+#
+# Build:  mackit build      (interactive: complete setup via VNC)
+# Boot:   mackit start      (SSH: ssh -p 20022 root@127.0.0.1)
+
+from: macos/sequoia
+
+hostname: mackit-plain
+
+commands:
+  firstboot:
+    - systemsetup -setremotelogin on
+  boot:
+    - echo "mackit plain ready"

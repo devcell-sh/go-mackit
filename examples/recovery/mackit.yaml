@@ -1,0 +1,10 @@
+# macOS Recovery: a small ephemeral boot volume (~4 GB) that boots
+# into the macOS Recovery environment. Useful for testing, CI, or
+# as a base for custom recovery workflows.
+#
+# Build:  mackit build --recovery   (fast, no full install)
+# Boot:   mackit start              (VNC: vnc://127.0.0.1:25900)
+
+from: macos/catalina
+
+recovery: true
