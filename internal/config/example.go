@@ -1,0 +1,78 @@
+package config
+
+const Example = `# mackit.yaml — macOS image build configuration
+#
+# Run "mackit build" in the same directory as this file, or pass
+# "mackit build -f path/to/mackit.yaml" explicitly.
+
+# Media source. Determines where the macOS installer comes from.
+#   macos/<version>[-<arch>]   — fetch from Apple's catalog (auto-detect arch)
+#   ./path/to/BaseSystem.dmg   — use a local recovery image
+#   ./path/to/installer.ipsw   — extract BaseSystem.dmg from a local IPSW
+# Default: macos/sequoia (arch auto-detected from host)
+from: macos/sequoia
+
+# Build mode (omit for a full disk install):
+#
+# recovery: true
+#   macOS Recovery environment only (~4 GB, ephemeral, like WinPE mode).
+
+# Guest hostname. Applied via SMBIOS serial so macOS reads it at boot.
+# 1-63 chars, letters, digits, or hyphens (RFC 1123).
+#
+# hostname: mackit
+
+# Commands to run at each build phase. If you only need post-boot
+# commands, use a flat list (they default to the "boot" phase):
+#
+#   commands:
+#     - /usr/sbin/systemsetup -setremotelogin on
+#     - softwareupdate --install-rosetta --agree-to-license
+#
+# For multi-phase control, use phase keys:
+#
+# commands:
+#   firstboot:
+#     # Runs during first boot after install.
+#     - /usr/sbin/systemsetup -setremotelogin on
+#
+#   boot:
+#     # Runs after the OS is up and SSH is reachable.
+#     # Executed over SSH from the host.
+#     - softwareupdate --install-rosetta --agree-to-license
+#     - brew install git
+#
+#     # Per-command options (all optional):
+#     # - cmd: "brew install cmake"
+#     #   timeout: 10m
+#     #   retries: 2
+#     #   valid-exit-codes:
+#     #     - 0
+#     #     - 1
+
+# Directory-based hooks (optional, alternative to inline commands).
+# Place scripts in hooks/<phase>/ next to this file:
+#
+#   hooks/
+#     firstboot/
+#       01_enable_ssh.sh
+#     boot/
+#       01_install_tools.sh
+#       02_configure_network.sh
+#
+# Scripts run in lexicographic order, after any inline commands.
+
+# OpenCore EFI bootloader. Required for macOS on QEMU.
+# Downloaded automatically from GitHub on first build.
+#
+# opencore:
+#   version: v21     # default: latest (v21)
+
+# Host-side ports forwarded into the build VM. Defaults shown.
+#
+# ports:
+#   ssh: 20022       # guest :22
+#   vnc: 25900       # guest :5900
+#   # Extra host:guest TCP forwards:
+#   # forward: ["28080:8080"]
+`
