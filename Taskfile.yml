@@ -6,17 +6,20 @@ tasks:
     dir: "{{.TASKFILE_DIR}}"
     silent: true
     cmds:
-      - mkdir -p /Users/dmitry/dev/devcell-sh/go-mackit/bin
-      - go build -o /Users/dmitry/dev/devcell-sh/go-mackit/bin/mackit ./cmd/mackit/
+      - mkdir -p ./bin
+      - go build -o ./bin/mackit ./cmd/mackit/
+      - '[ "$(uname -s)" != "Darwin" ] || codesign --force --sign - --entitlements entitlements.plist ./bin/mackit'
 
   install:
-    desc: Build + copy to ~/.local/bin/mackit
+    desc: Build + copy to ~/.local/bin/mackit (+ mackit-vz on macOS arm64)
     dir: "{{.TASKFILE_DIR}}"
-    deps: [build]
+    deps: [build, build:vz]
     silent: true
     cmds:
       - mkdir -p ~/.local/bin
-      - cp /Users/dmitry/dev/devcell-sh/go-mackit/bin/mackit ~/.local/bin/mackit
+      - cp ./bin/mackit ~/.local/bin/mackit
+      - '[ "$(uname -s)" != "Darwin" ] || codesign --force --sign - --entitlements entitlements.plist ~/.local/bin/mackit'
+      - '[ ! -f ./bin/mackit-vz ] || cp ./bin/mackit-vz ~/.local/bin/mackit-vz'
       - echo "Installed to ~/.local/bin/mackit"
 
   test:
@@ -46,6 +49,103 @@ tasks:
       - go mod tidy
 
   clean:
-    desc: Remove build artifacts
+    desc: Remove build artifacts and test disk images
     cmds:
       - rm -rf bin/ coverage.out
+      - task: clean:results:qcow2
+      - task: clean:results:raw
+
+  test:vz:
+    desc: "Install + provision + SSH: full VZ end-to-end (macOS arm64)"
+    dir: "{{.TASKFILE_DIR}}"
+    deps: [build:vz]
+    vars:
+      TIMEOUT: '{{.TIMEOUT | default "60m"}}'
+    cmds:
+      - go test -c -o ./bin/vz.test ./vm/vz/
+      - codesign --force --sign - --entitlements entitlements.plist ./bin/vz.test
+      - MACKIT_VZ_TEST=1 ./bin/vz.test -test.run TestVZProvisionAndSSH -test.timeout {{.TIMEOUT}} -test.v {{.CLI_ARGS}}
+    platforms: [darwin/arm64]
+
+  test:vz:all:
+    desc: "Run all VZ tests: protocol (any platform) + integration (macOS arm64)"
+    dir: "{{.TASKFILE_DIR}}"
+    cmds:
+      - task: test:vz:helper
+      - task: test:vz:integration
+
+  test:vz:integration:
+    desc: "Compile, sign, and run VZ integration tests (macOS arm64 only)"
+    dir: "{{.TASKFILE_DIR}}"
+    deps: [build:vz]
+    vars:
+      TEST_RUN: '{{.TEST_RUN | default "."}}'
+      TIMEOUT: '{{.TIMEOUT | default "60m"}}'
+    cmds:
+      - go test -c -o ./bin/vz.test ./vm/vz/
+      - codesign --force --sign - --entitlements entitlements.plist ./bin/vz.test
+      - MACKIT_VZ_TEST=1 ./bin/vz.test -test.run '{{.TEST_RUN}}' -test.timeout {{.TIMEOUT}} -test.v {{.CLI_ARGS}}
+    platforms: [darwin/arm64]
+
+  test:vz:install:
+    desc: "Install macOS from IPSW, boot, and verify screen (macOS arm64 only)"
+    dir: "{{.TASKFILE_DIR}}"
+    deps: [build:vz]
+    vars:
+      TIMEOUT: '{{.TIMEOUT | default "60m"}}'
+    cmds:
+      - go test -c -o ./bin/vz.test ./vm/vz/
+      - codesign --force --sign - --entitlements entitlements.plist ./bin/vz.test
+      - MACKIT_VZ_TEST=1 MACKIT_VZ_FORCE_INSTALL=1 ./bin/vz.test -test.run TestVZInstallAndBoot -test.timeout {{.TIMEOUT}} -test.v {{.CLI_ARGS}}
+    platforms: [darwin/arm64]
+
+  test:vz:setup-assistant:
+    desc: "Boot installed disk into Setup Assistant with VNC for flow development"
+    dir: "{{.TASKFILE_DIR}}"
+    vars:
+      TIMEOUT: '{{.TIMEOUT | default "120m"}}'
+    cmds:
+      - go test -c -o ./bin/vz.test ./vm/vz/
+      - codesign --force --sign - --entitlements entitlements.plist ./bin/vz.test
+      - MACKIT_VZ_TEST=1 MACKIT_VZ_KEEP=1 ./bin/vz.test -test.run TestVZSetupAssistant -test.timeout {{.TIMEOUT}} -test.v {{.CLI_ARGS}}
+    platforms: [darwin/arm64]
+
+  build:vz:
+    desc: "Build the mackit-vz Swift helper binary (macOS arm64 only)"
+    dir: "{{.TASKFILE_DIR}}/cmd/mackit-vz"
+    cmds:
+      - swift build -c release
+      - mkdir -p ../../bin
+      - cp .build/release/mackit-vz ../../bin/mackit-vz
+      - codesign --force --sign - --entitlements ../../entitlements.plist ../../bin/mackit-vz
+    platforms: [darwin/arm64]
+
+  test:vz:recovery-boot:
+    desc: "Boot installed disk into Recovery and verify stability (macOS arm64 only)"
+    dir: "{{.TASKFILE_DIR}}"
+    deps: [build:vz]
+    vars:
+      TIMEOUT: '{{.TIMEOUT | default "10m"}}'
+    cmds:
+      - go test -c -o ./bin/vz.test ./vm/vz/
+      - codesign --force --sign - --entitlements entitlements.plist ./bin/vz.test
+      - MACKIT_VZ_TEST=1 ./bin/vz.test -test.run TestVZBoot_Recovery -test.timeout {{.TIMEOUT}} -test.v {{.CLI_ARGS}}
+    platforms: [darwin/arm64]
+
+  test:vz:helper:
+    desc: "Run Go-side VZ helper protocol tests (any platform)"
+    dir: "{{.TASKFILE_DIR}}"
+    cmds:
+      - go test ./vm/vz/ -run TestHelper -v {{.CLI_ARGS}}
+
+  clean:results:qcow2:
+    desc: Delete every qcow2 under test/results (keeps logs, screenshots, OCR readings)
+    dir: "{{.TASKFILE_DIR}}"
+    cmds:
+      - find test/results -type f -name '*.qcow2' -print -delete
+
+  clean:results:raw:
+    desc: Delete every raw disk image under test/results (keeps logs, screenshots, OCR readings)
+    dir: "{{.TASKFILE_DIR}}"
+    cmds:
+      - find test/results -type f -name '*.raw' -print -delete

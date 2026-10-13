@@ -64,6 +64,12 @@ type VMInstallConfig struct {
 
 	Accel string
 
+	// Guest provisioning (macOS 27+ VZ only).
+	// When set, VZ skips Setup Assistant and creates this user with SSH enabled.
+	GuestUser     string
+	GuestPassword string
+	EnableSSH     bool
+
 	BackendExtra any
 }
 
@@ -88,6 +94,12 @@ type VMRunConfig struct {
 	SharedDir    string
 	Accel        string
 	SMBIOSSerial string
+
+	// Guest provisioning (macOS 27+ VZ only).
+	// When set on first boot after install, VZ skips Setup Assistant.
+	GuestUser     string
+	GuestPassword string
+	EnableSSH     bool
 
 	BackendExtra any
 }
