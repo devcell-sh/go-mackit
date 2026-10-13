@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/devcell-sh/go-mackit/build"
+	"github.com/devcell-sh/go-mackit/cache"
 	"github.com/devcell-sh/go-mackit/internal/logx"
+	"github.com/devcell-sh/go-mackit/media"
 	"github.com/devcell-sh/go-mackit/vm"
 	"github.com/devcell-sh/go-mackit/vm/qemu"
 	"github.com/devcell-sh/go-mackit/vm/vmstate"
@@ -28,6 +30,19 @@ type StartOpts struct {
 	Foreground bool
 	Forwards   []vm.PortForward
 	Logger     *slog.Logger
+	// CacheDir holds the OpenCore download (default cache.Dir()).
+	CacheDir string
+	// OpenCoreImg is an explicit OpenCore boot image; when empty the
+	// cached release is used, patched like builds do (hidden picker,
+	// verbose boot, serial logging). OpenCoreVersion selects the release
+	// ("" for the default).
+	OpenCoreImg     string
+	OpenCoreVersion string
+	// NIC is the QEMU network device model. Empty picks it from the macOS
+	// version named in the image file name ("macos-catalina.qcow2" gets
+	// vmxnet3, see build.GuestNIC); an image whose name says nothing gets
+	// the default, virtio-net-pci, which macOS 11 and later drive.
+	NIC string
 }
 
 func Start(ctx context.Context, opts StartOpts) (vm.VM, error) {
@@ -127,9 +142,28 @@ func Start(ctx context.Context, opts StartOpts) (vm.VM, error) {
 		Forwards:     opts.Forwards,
 	}
 	if backendName == "qemu" {
+		// macOS on QEMU boots only through OpenCore, so every start gets
+		// the same patched image as a build.
+		ocImg := opts.OpenCoreImg
+		if ocImg == "" {
+			cacheDir := opts.CacheDir
+			if cacheDir == "" {
+				cacheDir = cache.Dir()
+			}
+			ocImg, err = build.PrepareOpenCore(ctx, cacheDir, outDir, opts.OpenCoreVersion, logger)
+			if err != nil {
+				return nil, fmt.Errorf("preparing OpenCore: %w", err)
+			}
+		}
+		nic := opts.NIC
+		if nic == "" {
+			nic = build.GuestNIC(versionInName(name))
+		}
 		runCfg.BackendExtra = &qemu.RunOptions{
+			OpenCoreImg: ocImg,
 			VarsPath:    varsPath,
 			DisplayType: displayType,
+			NIC:         nic,
 			Detach:      !opts.Foreground,
 		}
 	}
@@ -143,6 +177,19 @@ func Start(ctx context.Context, opts StartOpts) (vm.VM, error) {
 	if err != nil {
 		return nil, fmt.Errorf("starting VM: %w", err)
 	}
+
+	// Forward the guest console (firmware, OpenCore, kernel -v) into the
+	// logger for as long as the VM runs; `mackit logs -s serial` reads the
+	// same file after a detached start.
+	go func() {
+		tailCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			<-machine.Done()
+			cancel()
+		}()
+		qemu.TailSerial(tailCtx, filepath.Join(outDir, "serial.log"), logger)
+	}()
 
 	st := &vmstate.State{
 		Name:      name,
@@ -171,4 +218,16 @@ func Status(stateDir string) ([]*vmstate.State, error) {
 		stateDir = vmstate.DefaultDir()
 	}
 	return vmstate.List(stateDir)
+}
+
+// versionInName returns the macOS version codename an image or VM name
+// contains ("macos-catalina" gives "catalina"), or "".
+func versionInName(name string) string {
+	lower := strings.ToLower(name)
+	for _, v := range media.VersionNames() {
+		if strings.Contains(lower, v) {
+			return v
+		}
+	}
+	return ""
 }

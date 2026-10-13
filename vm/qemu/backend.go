@@ -77,6 +77,7 @@ func (b *Backend) StartRun(ctx context.Context, cfg vm.VMRunConfig) (vm.VM, erro
 		rc.OpenCoreImg = opts.OpenCoreImg
 		rc.VarsPath = opts.VarsPath
 		rc.DisplayType = opts.DisplayType
+		rc.NIC = opts.NIC
 		rc.Detach = opts.Detach
 		rc.StructuredLogPath = opts.StructuredLogPath
 	}

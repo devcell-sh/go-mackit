@@ -34,9 +34,12 @@ var CatalinaReinstall = []Step{
 		Actions:  []Action{Click("button:Agree")},
 	},
 	{
-		Name:     "target disk",
-		Screen:   "installer.target",
-		Elements: []string{"button:Install"},
-		Timeout:  2 * time.Minute,
+		// The page itself: Install stays disabled until a volume is
+		// clicked (CatalinaInstall's next steps), so this waits for the
+		// page text, not for the button.
+		Name:    "target disk",
+		Screen:  "installer.target",
+		Text:    []string{"select the disk where you want to install"},
+		Timeout: 2 * time.Minute,
 	},
 }

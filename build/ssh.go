@@ -2,15 +2,38 @@ package build
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
-	"os/exec"
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/devcell-sh/go-mackit/build/buildopts"
 )
+
+// sshCreds is the guest account hooks run as: the one a Full build
+// creates in HeadlessSetup (buildopts.BuildOpts.User, Password).
+type sshCreds struct {
+	User     string
+	Password string
+}
+
+// creds returns the build's guest account, defaults applied.
+func (c Config) creds() sshCreds {
+	cr := sshCreds{User: buildopts.DefaultUser, Password: buildopts.DefaultPassword}
+	if c.Opts != nil {
+		if c.Opts.User != "" {
+			cr.User = c.Opts.User
+		}
+		if c.Opts.Password != "" {
+			cr.Password = c.Opts.Password
+		}
+	}
+	return cr
+}
 
 func waitForSSH(ctx context.Context, addr string, timeout time.Duration, logger *slog.Logger) error {
 	logger.Info("waiting for SSH", "addr", addr, "timeout", timeout)
@@ -33,13 +56,16 @@ func waitForSSH(ctx context.Context, addr string, timeout time.Duration, logger 
 	}
 }
 
+// checkSSHBanner reports whether an SSH server answers at addr. One read
+// is enough: the banner is the first thing the server sends, before any
+// client data, so it arrives in the first packet.
 func checkSSHBanner(addr string) bool {
 	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
 	if err != nil {
 		return false
 	}
 	defer conn.Close()
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	buf := make([]byte, 64)
 	n, err := conn.Read(buf)
 	if err != nil || n == 0 {
@@ -48,7 +74,7 @@ func checkSSHBanner(addr string) bool {
 	return strings.HasPrefix(string(buf[:n]), "SSH-")
 }
 
-func runHooks(ctx context.Context, hooks []buildopts.Hook, phase buildopts.HookPhase, sshAddr string, logger *slog.Logger) error {
+func runHooks(ctx context.Context, hooks []buildopts.Hook, phase buildopts.HookPhase, sshAddr string, creds sshCreds, logger *slog.Logger) error {
 	for _, h := range hooks {
 		if h.Phase != phase {
 			continue
@@ -59,7 +85,7 @@ func runHooks(ctx context.Context, hooks []buildopts.Hook, phase buildopts.HookP
 		}
 		logger.Info("running hook", "phase", phase, "cmd", label)
 
-		if err := runSSHCommand(ctx, sshAddr, h.Cmd, h.Timeout); err != nil {
+		if err := runSSHCommand(ctx, sshAddr, creds, h.Cmd, h.Timeout); err != nil {
 			if isExitOK(err, h.ValidExitCodes) {
 				logger.Info("hook exited with accepted code", "cmd", label)
 				continue
@@ -68,7 +94,7 @@ func runHooks(ctx context.Context, hooks []buildopts.Hook, phase buildopts.HookP
 				var retryErr error
 				for r := 0; r < h.Retries; r++ {
 					logger.Info("retrying hook", "cmd", label, "attempt", r+2)
-					retryErr = runSSHCommand(ctx, sshAddr, h.Cmd, h.Timeout)
+					retryErr = runSSHCommand(ctx, sshAddr, creds, h.Cmd, h.Timeout)
 					if retryErr == nil || isExitOK(retryErr, h.ValidExitCodes) {
 						retryErr = nil
 						break
@@ -85,31 +111,58 @@ func runHooks(ctx context.Context, hooks []buildopts.Hook, phase buildopts.HookP
 	return nil
 }
 
-func runSSHCommand(ctx context.Context, addr, command string, timeout time.Duration) error {
+// runSSHCommand runs command on the guest over SSH with password
+// authentication, as the build's user. Errors from the command carry its
+// exit status (see isExitOK) and the trimmed combined output.
+func runSSHCommand(ctx context.Context, addr string, creds sshCreds, command string, timeout time.Duration) error {
 	if timeout == 0 {
 		timeout = 5 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		host = "127.0.0.1"
-		port = "20022"
+	cfg := &ssh.ClientConfig{
+		User:            creds.User,
+		Auth:            []ssh.AuthMethod{ssh.Password(creds.Password)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // a throwaway build VM on localhost
+		Timeout:         30 * time.Second,
 	}
-
-	args := []string{
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "ConnectTimeout=10",
-		"-p", port,
-		fmt.Sprintf("root@%s", host),
-		command,
-	}
-
-	cmd := exec.CommandContext(ctx, "ssh", args...)
-	out, err := cmd.CombinedOutput()
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
+		return fmt.Errorf("connecting to %s: %w", addr, err)
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		conn.SetDeadline(dl)
+	}
+	c, chans, reqs, err := ssh.NewClientConn(conn, addr, cfg)
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("ssh %s@%s: %w", creds.User, addr, err)
+	}
+	client := ssh.NewClient(c, chans, reqs)
+	defer client.Close()
+
+	sess, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("ssh session: %w", err)
+	}
+	defer sess.Close()
+
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			client.Close()
+		case <-done:
+		}
+	}()
+	out, err := sess.CombinedOutput(command)
+	close(done)
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("%w: %s", ctx.Err(), strings.TrimSpace(string(out)))
+		}
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -119,29 +172,17 @@ func isExitOK(err error, validCodes []int) bool {
 	if err == nil {
 		return true
 	}
-	var exitErr *exec.ExitError
-	if !isExitError(err, &exitErr) {
+	if len(validCodes) == 0 {
 		return false
 	}
-	code := exitErr.ExitCode()
-	for _, c := range validCodes {
-		if code == c {
-			return true
-		}
+	var exitErr *ssh.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
 	}
-	return false
-}
-
-func isExitError(err error, target **exec.ExitError) bool {
-	for err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			*target = ee
+	code := exitErr.ExitStatus()
+	for _, c := range validCodes {
+		if c == code {
 			return true
-		}
-		if u, ok := err.(interface{ Unwrap() error }); ok {
-			err = u.Unwrap()
-		} else {
-			return false
 		}
 	}
 	return false

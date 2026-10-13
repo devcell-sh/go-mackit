@@ -2,6 +2,7 @@ package qemu
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -36,7 +37,7 @@ func cpuType(spec Spec) string {
 		if accel == "hvf" || accel == "kvm" {
 			return "host"
 		}
-		return "Penryn,+ssse3,+sse4.2,+popcnt,+avx,+aes,+pclmulqdq,+xsave,+xsaveopt,check"
+		return "Haswell-noTSX"
 	}
 	switch accel {
 	case "hvf":
@@ -49,13 +50,25 @@ func cpuType(spec Spec) string {
 }
 
 func baseCommand(spec Spec) []string {
+	accel := spec.effectiveAccel()
+	cpus := spec.CPUs
+	if IsTCG(accel) && cpus > TCGMaxCPUs {
+		cpus = TCGMaxCPUs
+	}
+
 	argv := []string{
 		QEMUBinaryForArch(spec.guestArch()),
 		"-machine", machineType(spec),
 		"-cpu", cpuType(spec),
-		"-accel", spec.effectiveAccel(),
-		"-smp", fmt.Sprintf("cpus=%d", spec.CPUs),
+		"-accel", accel,
+		"-smp", fmt.Sprintf("cpus=%d", cpus),
 		"-m", fmt.Sprintf("%dG", spec.MemoryGB),
+	}
+
+	if IsTCG(accel) {
+		if hp := HugepagesArgs(); hp != nil {
+			argv = append(argv, hp...)
+		}
 	}
 
 	if spec.VarsPath != "" {
@@ -95,20 +108,26 @@ func baseCommand(spec Spec) []string {
 		"-device", "ide-hd,bus=sata.2,drive=MacHDD,bootindex=1",
 	)
 
+	nic := spec.NIC
+	if nic == "" {
+		nic = DefaultNIC
+	}
 	argv = append(argv,
 		"-netdev", "user,id=net0",
-		"-device", "virtio-net-pci,netdev=net0",
+		"-device", nic+",netdev=net0",
 	)
 
 	argv = append(argv, "-display", spec.DisplayType)
 
-	// Input devices on the chipset EHCI/UHCI controllers (-usb). macOS
-	// Recovery ignored both usb-kbd and usb-tablet when they hung off a
-	// qemu-xhci controller under EDK2/OpenCore (no cursor movement, no
-	// key events); the EHCI path is the recipe used by macOS-Simple-KVM
-	// and friends for Catalina.
+	// Input: EHCI USB for macOS (xHCI was ignored by macOS Recovery).
+	// On x86 Q35, -usb creates a chipset EHCI; on arm64 virt there is
+	// no built-in USB controller so we add one explicitly.
+	if isX86(spec.guestArch()) {
+		argv = append(argv, "-usb")
+	} else {
+		argv = append(argv, "-device", "ich9-usb-ehci1,id=usb-ctl")
+	}
 	argv = append(argv,
-		"-usb",
 		"-device", "usb-kbd,id="+USBKeyboardID,
 		"-device", "usb-tablet,id="+USBTabletID,
 	)
@@ -134,6 +153,17 @@ func baseCommand(spec Spec) []string {
 
 	return argv
 }
+
+// DefaultNIC is the network device model when Spec.NIC is empty. macOS
+// 11 and later drive it natively. An installed Catalina does not: on
+// virtio-net-pci its en0 came up with a random MAC and never saw slirp's
+// DHCP offers (verified 2026-10-10 with a packet dump), although the same
+// device works in Catalina's Recovery. Those guests take NICCatalina.
+const DefaultNIC = "virtio-net-pci"
+
+// NICCatalina is the network device model for macOS 10.15 and earlier
+// guests, driven by the VMware driver macOS ships.
+const NICCatalina = "vmxnet3"
 
 func BuildInstallCommand(spec Spec, installerIMG, openCoreImg string) []string {
 	spec.OpenCoreImg = openCoreImg
@@ -176,7 +206,12 @@ func applySSHForward(spec Spec, argv []string) []string {
 		fwds = append(fwds, fmt.Sprintf("hostfwd=tcp:%s:%d-:%d", host, spec.SSHPort, guestPort))
 	}
 
-	if spec.VNCPort != 0 {
+	// The guest's own Screen Sharing (5900) is forwarded to VNCPort unless
+	// QEMU's VNC display already listens there: builds put the display on
+	// that port, and a loopback forward on the same number would win over
+	// the display's wildcard bind and send viewers into a guest that has
+	// no VNC server (Recovery), which closes the connection.
+	if spec.VNCPort != 0 && VNCDisplayPort(spec.DisplayType) != spec.VNCPort {
 		fwds = append(fwds, fmt.Sprintf("hostfwd=tcp:%s:%d-:5900", host, spec.VNCPort))
 	}
 
@@ -195,4 +230,25 @@ func applySSHForward(spec Spec, argv []string) []string {
 		}
 	}
 	return argv
+}
+
+// VNCDisplayPort returns the TCP port a "vnc=[host]:N" display listens on
+// (5900+N), or 0 for any other display type.
+func VNCDisplayPort(displayType string) uint16 {
+	if !strings.HasPrefix(displayType, "vnc=") {
+		return 0
+	}
+	spec := strings.TrimPrefix(displayType, "vnc=")
+	if i := strings.IndexByte(spec, ','); i >= 0 {
+		spec = spec[:i]
+	}
+	i := strings.LastIndexByte(spec, ':')
+	if i < 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(spec[i+1:])
+	if err != nil || n < 0 || 5900+n > 65535 {
+		return 0
+	}
+	return uint16(5900 + n)
 }

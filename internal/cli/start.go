@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	mackit "github.com/devcell-sh/go-mackit"
+	"github.com/devcell-sh/go-mackit/cache"
 	"github.com/devcell-sh/go-mackit/vm"
 )
 
@@ -13,6 +14,8 @@ func newStartCmd() *cobra.Command {
 	var (
 		name       string
 		accel      string
+		nic        string
+		cacheDir   string
 		cpus       uint
 		memoryGB   uint64
 		sshPort    uint16
@@ -49,6 +52,8 @@ func newStartCmd() *cobra.Command {
 				Foreground: foreground,
 				Forwards:   fwds,
 				Logger:     logger,
+				CacheDir:   cacheDir,
+				NIC:        nic,
 			}
 
 			machine, err := mackit.Start(cmd.Context(), opts)
@@ -67,6 +72,8 @@ func newStartCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&name, "name", "", "VM name (default: image filename)")
 	cmd.Flags().StringVar(&accel, "accel", "", "QEMU accelerator: hvf, kvm, or tcg")
+	cmd.Flags().StringVar(&nic, "nic", "", "QEMU network device: vmxnet3 for Catalina, virtio-net-pci for macOS 11+ (default: from the image name)")
+	cmd.Flags().StringVar(&cacheDir, "cache-dir", "", "cache directory for the OpenCore image (default: "+cache.DirEnv+")")
 	cmd.Flags().UintVar(&cpus, "cpus", 0, "number of CPUs (default: 4)")
 	cmd.Flags().Uint64Var(&memoryGB, "memory", 0, "memory in GB (default: 6)")
 	cmd.Flags().Uint16Var(&sshPort, "ssh-port", 0, "host SSH port (default: 20022)")
@@ -83,4 +90,3 @@ func parseForwardSpec(spec string) (uint16, uint16, error) {
 	}
 	return uint16(h), uint16(g), nil
 }
-

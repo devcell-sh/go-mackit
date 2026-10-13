@@ -62,17 +62,31 @@ var Catalina = &Catalog{
 			Verified: true,
 		},
 		{
+			// Verified 2026-10-10: right after Install the page reads "macOS
+			// Catalina will be installed on the disk "Macintosh HD"" and
+			// "About 19 minutes remaining"; after the reboot the Apple logo
+			// shows "About N minutes remaining...", "About a minute
+			// remaining..." and "Estimating time remaining...". The first
+			// sentence alone is the target page with a volume selected, so
+			// it is not a phrase here.
+			Name: "installer.progress",
+			Any:  []string{"installing macos", "minute remaining", "minutes remaining", "about remaining", "time remaining"},
+		},
+		{
+			// The headline is "Select the disk where you want to install
+			// macOS." until a volume is clicked, then "macOS Catalina will
+			// be installed on the disk "Macintosh HD"." with Back and
+			// Install still showing; the progress page keeps that second
+			// sentence but adds "About N minutes remaining" and Cancel.
+			// installer.progress is listed first so "remaining" wins.
 			Name:     "installer.target",
-			All:      []string{"select the disk where you want to install"},
+			All:      []string{"install macos catalina"},
+			Any:      []string{"select the disk where you want to install", "will be installed on the disk"},
 			Verified: true,
 			Elements: []Element{
 				{Name: "install", Text: "install"},
 				{Name: "back", Text: "back"},
 			},
-		},
-		{
-			Name: "installer.progress",
-			Any:  []string{"installing macos", "minutes remaining", "about remaining", "time remaining"},
 		},
 		{
 			Name: "setup.welcome",

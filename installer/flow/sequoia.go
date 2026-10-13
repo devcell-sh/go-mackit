@@ -35,6 +35,14 @@ var Sequoia = &Catalog{
 			},
 		},
 		{
+			Name: "installer.target",
+			All:  []string{"install macos sequoia"},
+			Any:  []string{"select the disk where you want to install", "will be installed on the disk"},
+			Elements: []Element{
+				{Name: "install", Text: "install"},
+			},
+		},
+		{
 			Name: "installer.progress",
 			Any:  []string{"installing macos", "install macos sequoia", "minutes remaining", "about remaining"},
 		},

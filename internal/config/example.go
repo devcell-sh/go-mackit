@@ -22,6 +22,14 @@ from: macos/sequoia
 #
 # hostname: mackit
 
+# Administrator account a full build creates in the installed system
+# (default admin/admin). Commands run over SSH as this user, which has
+# passwordless sudo. The password is typed into Recovery's Terminal during
+# the build and shows in the build's screenshots: change it at first login.
+#
+# user: admin
+# password: admin
+
 # Commands to run at each build phase. If you only need post-boot
 # commands, use a flat list (they default to the "boot" phase):
 #

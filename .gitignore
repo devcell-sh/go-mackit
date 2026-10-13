@@ -18,7 +18,8 @@ coverage.out
 
 # Test results (durable, not cleaned by go test)
 test/results/
-
+test/testdata/macos/**
+test/testdata/vz-installed/
 # Scratch / dev
 .scratch/
 .devcell/
@@ -31,3 +32,4 @@ Thumbs.db
 # Go workspace files
 go.work
 go.work.sum
+!.gitkeep

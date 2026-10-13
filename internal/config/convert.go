@@ -16,6 +16,8 @@ func (c *Config) ToBuildOpts() (*buildopts.BuildOpts, error) {
 		From:     c.From,
 		Recovery: c.Recovery,
 		Hostname: c.Hostname,
+		User:     c.User,
+		Password: c.Password,
 	}
 
 	if c.OpenCore != nil && c.OpenCore.Version != "" {

@@ -129,7 +129,45 @@ builds a `flow.Runner` from the catalog for the configured macOS version:
 1. Wait for `recovery.utilities` (macOS Utilities), pressing Enter whenever the
    OpenCore picker is seen (a `Reaction`); the blind Enter after 10 s stays as
    a safety net. Logs `macOS Recovery reached`.
-2. Run `build.Config.RecoverySteps` (for example `flow.OpenTerminal`).
+2. Recovery builds run `build.Config.RecoverySteps` (for example
+   `flow.OpenTerminal`). Full builds run `flow.InstallStepsFor(version, 64)`:
+   on Catalina `flow.EraseDisk` (Terminal, `diskutil eraseDisk` on the disk
+   whose `diskutil list` size matches 64 GiB) then `flow.CatalinaReinstall`,
+   select the volume, Install, wait for `installer.progress` and then for
+   the display to switch to the installed system's mode (`Step.Display`,
+   1280x800 against the installer's 1920x1080, held 30 s because every boot
+   passes through it briefly; log: `macOS installed, installed system
+   booted`). The build then stops that VM, starts a fresh one with the
+   install media still attached (which boots Recovery: the installer's
+   bless does not survive a QEMU restart) and runs `flow.HeadlessSetup`:
+   Terminal, one typed script that creates the admin user on the Data
+   volume with `dscl`, copies the home from the User Template, adds a
+   sudoers drop-in, touches `.AppleSetupDone`, and clears sshd's launchd
+   override (label `com.openssh.sshd`), then `shutdown -h now` (log:
+   `headless setup done, ...`). Last, the installed disk boots alone, the
+   build waits for the SSH banner, runs hooks as that user over password
+   SSH (`golang.org/x/crypto/ssh`), shuts down with `sudo`, and flattens.
+   `TestExampleFull_Install` with `MACKIT_INSTALL_UNTIL=all` stops at
+   `build complete`.
+
+Catalina guests need the `vmxnet3` NIC (`build.GuestNIC`, `qemu.Spec.NIC`):
+on `virtio-net-pci` the installed system's en0 sends DHCP discovers from a
+random MAC and never sees slirp's offers, although Recovery downloads the
+installer over the same device. `mackit start` picks the NIC from the macOS
+codename in the image name, or `--nic`.
+
+The install flow was learned one step at a time against a live VM:
+`build.Config.StopAfterStep` runs the flow up to a named step and then idles
+with the VM up (`KeepVM` leaves it running when the build returns), and the
+e2e test exposes that as `MACKIT_INSTALL_UNTIL=<step>|all` with the verified
+frontier in `installFrontier`. `MACKIT_VM_MEMORY_GB` shrinks the VM for a
+memory-capped container (a 4 GiB cgroup needs 3; the installer touches all
+guest memory and the kernel kills QEMU silently). From the container the VM
+is reachable over QEMU's VNC on the configured port (`.scratch/tools/vnc-lab`
+for screenshots; vncdo typing garbles shifted characters) and over its QMP
+socket from `work/qemu.log` (`.scratch/tools/flow-lab click|keys|type|shot`,
+the runner's own input path). Read the saved `work/ocr/*.json` for element
+boxes and styles, try the action, then codify it as a selector-based step.
 
 When OCR is unavailable (no cgo, unsupported platform, download failure) the
 build logs why and falls back to the blind Enter after 10 s. With `--debug`
@@ -137,23 +175,48 @@ build logs why and falls back to the blind Enter after 10 s. With `--debug`
 `<work>/screenshots/<ISO 8601 basic UTC>-<screen>-<seq>.png` (for example
 `20261010T055339Z-recovery.utilities-0002.png`) and what OCR read from it
 to `<work>/ocr/<same base>.json` (`flow.Reading`: screen, size, frame path,
-text lines with boxes and scores, detected elements when the detector ran). The periodic captures use the
+text lines with boxes and scores, and when the detector ran the theme,
+backdrop, and each element with its measured style: colours, contrast,
+disabled, highlighted, focused). The periodic captures use the
 same scheme with the label `periodic`
 (`20261010T055434Z-periodic-0001.png`), so a run's screenshots sort as one
 timeline. The basic profile has no colons, which Finder shows as slashes.
 
 Catalogs are per macOS version in `installer/flow/<version>.go`: screens are
 matched by normalized OCR text (`All` and `Any` phrases, first match wins,
-most specific first). Steps are data: `{Screen, Elements, Timeout, Optional,
-Actions}` with actions `Keys`, `Chord`, `Click(selector)`, `ClickAt`, `Type`,
+most specific first). Steps are data: `{Screen, Elements, Text, Timeout, Optional,
+Actions}` (`Text` waits for phrases among the OCR lines without the
+element detector) with actions `Keys`, `Chord`, `Click(selector)`, `ClickAt`, `Type`,
 `Sleep`, and `Reactions` for screens that may interrupt the wait. Elements
 are addressed by selector: `text:Reinstall macOS`, `button:Continue`,
 `icon@700,310` (textshot element keys), or a catalog element name. A step
 that lists selectors in `Elements` waits until they resolve, so
 `{Screen: "recovery.utilities", Elements: ["text:Reinstall macOS"], Actions:
 [Click("text:Reinstall macOS")]}` reads "when Reinstall macOS is on screen,
-click it". Screen identification uses cheap OCR text; the UI element detector
-(several seconds per frame) only runs for steps that use selectors.
+click it". Selectors also accept textshot keys verbatim (`icon:Disk Utility`,
+`button:Agree#2`).
+
+The runner spends model time only where it pays off (`installer/flow/runner.go`):
+
+- A capture that has not changed since the last frame read with the models
+  (`textshot.Diff` below `ChangeThreshold`, 0.05%) reuses that reading; no
+  OCR, no frame saved. The comparison is against the last *read* frame, not
+  the previous capture, so slow changes (Terminal output, a progress bar)
+  add up and get read; a static screen's cursor or spinner stays under
+  0.02% and does not.
+- Screen identification uses cheap OCR text. The element detector (several
+  seconds per frame) runs only when the step needs elements *and* the text
+  already shows the wanted screen and every text selector; `detectorWanted`
+  logs why it was skipped.
+- `DetectScreen` is composed from the lines already read plus
+  `DetectInteractables` (`flow.NewEngineOCR`), so OCR never runs twice.
+- Element `Style` is used: a greyed-out button (`Style.Disabled`) never
+  resolves, so a step waiting for `button:Install` waits until it is enabled
+  and the timeout error says "on screen but disabled"; a highlighted
+  (default) button is pressed with Enter instead of a click
+  (`EnterOnDefault`).
+- After each action the runner waits for the screen to stop changing
+  (`SettleTimeout`, captures every `SettleDelay`) instead of a fixed pause.
 
 Guest input goes over QMP to the USB keyboard and tablet on the chipset EHCI
 controller (`-usb`), addressed by device id. Under `qemu-xhci` macOS Recovery

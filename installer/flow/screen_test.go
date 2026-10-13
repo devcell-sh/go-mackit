@@ -210,6 +210,30 @@ var (
 		{Text: "Back"},
 		{Text: "Install"},
 	}
+	// targetSelectedLines is the same page once Macintosh HD was clicked:
+	// the headline changes, Install is enabled.
+	targetSelectedLines = []textshot.TextResult{
+		{Text: "Install macOS Catalina Edit Window"},
+		{Text: "Install macOS Catalina"},
+		{Text: "macOS Catalina"},
+		{Text: "macOS Catalina will be installed on the disk \"Macintosh HD\"."},
+		{Text: "Macintosh HD"},
+		{Text: "68.51 GB total"},
+		{Text: "macOS Base System"},
+		{Text: "Back"},
+		{Text: "Install"},
+	}
+	// progressPhase1Lines is the page right after Install, progressPhase2Lines
+	// the Apple logo after the first reboot.
+	progressPhase1Lines = []textshot.TextResult{
+		{Text: "Install macOS Catalina Edit Window"},
+		{Text: "Install macOS Catalina"},
+		{Text: "macOS Catalina will be installed on the disk \"Macintosh HD\"."},
+		{Text: "Macintosh HD"},
+		{Text: "About 19 minutes remaining"},
+		{Text: "Cancel"},
+	}
+	progressPhase2Lines = []textshot.TextResult{{Text: "About a minute remaining..."}}
 	licenseConfirmLines = append([]textshot.TextResult{
 		{Text: "I have read and agree to the terms of the"},
 		{Text: "software license agreement."},
@@ -224,6 +248,20 @@ func TestIdentifyCatalinaInstallerScreens(t *testing.T) {
 		"installer.license":         licenseLines,
 		"installer.license_confirm": licenseConfirmLines,
 		"installer.target":          targetLines,
+	}
+	// Distinct lines, not a map, where the same line set must not be
+	// mistaken for a neighbour.
+	for _, c := range []struct {
+		want  string
+		lines []textshot.TextResult
+	}{
+		{"installer.target", targetSelectedLines},
+		{"installer.progress", progressPhase1Lines},
+		{"installer.progress", progressPhase2Lines},
+	} {
+		m, ok := Catalina.Identify(c.lines, hd)
+		require.True(t, ok, c.want)
+		require.Equal(t, c.want, m.Name())
 	}
 	for want, lines := range cases {
 		m, ok := Catalina.Identify(lines, hd)
@@ -262,4 +300,32 @@ func TestIdentify_BootVerbose(t *testing.T) {
 	m, ok := Catalina.Identify(utilitiesLines, image.Rect(0, 0, 1920, 1080))
 	require.True(t, ok)
 	require.Equal(t, "recovery.utilities", m.Name())
+}
+
+func TestFindAnchorsButtonToItsLabel(t *testing.T) {
+	// The installer's license page as read on 2026-10-10: OCR put the
+	// labels under the arrow buttons, the detector put the Agree box in
+	// the gap between the two buttons.
+	lines := []textshot.TextResult{
+		{Text: "Disagree", Box: image.Rect(886, 713, 945, 732)},
+		{Text: "Agree", Box: image.Rect(984, 713, 1026, 732)},
+	}
+	m := Match{Lines: lines, Elements: []textshot.Element{
+		{Key: "button:Agree", Kind: textshot.KindButton, Text: "Agree", Box: image.Rect(943, 684, 978, 731)},
+	}}
+	box, ok := m.Find("button:Agree")
+	require.True(t, ok)
+	require.Equal(t, image.Rect(984, 685, 1026, 732), box, "the label reaching up over its arrow, not the misplaced box")
+	require.Equal(t, image.Pt(1005, 708), image.Pt((box.Min.X+box.Max.X)/2, (box.Min.Y+box.Max.Y)/2))
+
+	// A box that covers both buttons: its centre is the gap, the label wins.
+	m.Elements[0].Box = image.Rect(887, 679, 1033, 733)
+	box, _ = m.Find("button:Agree")
+	require.Equal(t, image.Rect(984, 685, 1026, 732), box)
+
+	// A box that contains its label keeps the detector's box (the whole
+	// control, circle and label).
+	m.Elements[0].Box = image.Rect(980, 679, 1033, 733)
+	box, _ = m.Find("button:Agree")
+	require.Equal(t, image.Rect(980, 679, 1033, 733), box)
 }

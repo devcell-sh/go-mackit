@@ -20,6 +20,7 @@
 package flow
 
 import (
+	"fmt"
 	"image"
 	"regexp"
 	"strings"
@@ -70,10 +71,13 @@ type Match struct {
 	Bounds image.Rectangle
 	// Lines are the OCR text lines the screen was identified from.
 	Lines []textshot.TextResult
-	// Elements are the detected UI elements (text, buttons, icons). Nil
-	// when the step did not need them: element detection costs several
-	// seconds per frame, so the runner only runs it on demand.
+	// Elements are the detected UI elements (text, buttons, icons) with
+	// their measured Style. Nil when the step did not need them: element
+	// detection costs several seconds per frame, so the runner only runs
+	// it on demand.
 	Elements []textshot.Element
+	// Theme is the screen's brightness when elements were detected.
+	Theme textshot.Theme
 }
 
 // Text returns the OCR lines joined by newlines.
@@ -91,28 +95,69 @@ func (m Match) Name() string {
 
 // Find resolves a selector (see the package doc) to an element box.
 func (m Match) Find(selector string) (image.Rectangle, bool) {
+	el, ok := m.findElement(selector)
+	return el.Box, ok
+}
+
+// findElement resolves a selector to an element. A textshot Key
+// ("button:Continue", "icon:Disk Utility", "icon@700,310", "text:Agree#2")
+// matches exactly first; then "text:" and "button:" selectors match by
+// text (exact beats substring); then catalog element names. Elements that
+// read as disabled (greyed out) never resolve: clicking them does nothing,
+// and a step waiting for "text:Install" should wait until it is enabled.
+func (m Match) findElement(selector string) (textshot.Element, bool) {
+	for _, e := range m.Elements {
+		if e.Key == selector && !disabled(e) {
+			return m.anchorToLabel(e), true
+		}
+	}
 	switch {
 	case strings.HasPrefix(selector, "text:"):
 		return m.findText(selector[len("text:"):], textshot.KindText, textshot.KindButton)
 	case strings.HasPrefix(selector, "button:"):
 		return m.findText(selector[len("button:"):], textshot.KindButton)
-	case strings.HasPrefix(selector, "icon@"):
-		for _, e := range m.Elements {
-			if e.Key == selector {
-				return e.Box, true
-			}
-		}
-		return image.Rectangle{}, false
+	case strings.HasPrefix(selector, "icon:"), strings.HasPrefix(selector, "icon@"):
+		return textshot.Element{}, false
 	}
 	if m.Screen == nil {
-		return image.Rectangle{}, false
+		return textshot.Element{}, false
 	}
 	for _, e := range m.Screen.Elements {
 		if e.Name == selector {
-			return m.locate(e)
+			box, ok := m.locate(e)
+			return textshot.Element{Box: box, Kind: textshot.KindButton, Key: selector, Text: e.Text}, ok
 		}
 	}
-	return image.Rectangle{}, false
+	return textshot.Element{}, false
+}
+
+// Explain says why a selector does not resolve when the reason is visible
+// on screen: the element is there but disabled. Empty when the selector
+// resolves or the element is simply absent.
+func (m Match) Explain(selector string) string {
+	if _, ok := m.findElement(selector); ok {
+		return ""
+	}
+	want := Normalize(selectorText(selector))
+	if want == "" {
+		return ""
+	}
+	for _, e := range m.Elements {
+		if e.Key == selector || strings.Contains(Normalize(e.Text), want) {
+			if disabled(e) {
+				return fmt.Sprintf("%q is on screen but disabled (contrast %.1f)", selector, e.Style.Contrast)
+			}
+		}
+	}
+	return ""
+}
+
+func disabled(e textshot.Element) bool {
+	return e.Style.Disabled
+}
+
+func center(r image.Rectangle) image.Point {
+	return image.Pt((r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2)
 }
 
 // Center returns the click point of a selector's element.
@@ -121,21 +166,21 @@ func (m Match) Center(selector string) (image.Point, bool) {
 	if !ok {
 		return image.Point{}, false
 	}
-	return image.Pt((r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2), true
+	return center(r), true
 }
 
 // findText returns the box of the element whose text best matches want:
 // an exact normalized match beats a substring match, and earlier kinds in
 // the list beat later ones. Falls back to the OCR lines when no elements
 // were detected.
-func (m Match) findText(want string, kinds ...textshot.Kind) (image.Rectangle, bool) {
+func (m Match) findText(want string, kinds ...textshot.Kind) (textshot.Element, bool) {
 	want = Normalize(want)
 	if want == "" {
-		return image.Rectangle{}, false
+		return textshot.Element{}, false
 	}
 	bestRank := -1
-	var best image.Rectangle
-	consider := func(text string, box image.Rectangle, kindRank int) {
+	var best textshot.Element
+	consider := func(text string, el textshot.Element, kindRank int) {
 		norm := Normalize(text)
 		var rank int
 		switch {
@@ -148,23 +193,60 @@ func (m Match) findText(want string, kinds ...textshot.Kind) (image.Rectangle, b
 		}
 		rank = rank*10 + (10 - kindRank)
 		if rank > bestRank {
-			bestRank, best = rank, box
+			bestRank, best = rank, el
 		}
 	}
 	if m.Elements != nil {
 		for _, e := range m.Elements {
+			if disabled(e) {
+				continue
+			}
 			for k, kind := range kinds {
 				if e.Kind == kind {
-					consider(e.Text, e.Box, k)
+					consider(e.Text, e, k)
 				}
 			}
 		}
+		if bestRank >= 0 {
+			best = m.anchorToLabel(best)
+		}
 	} else {
 		for _, l := range m.Lines {
-			consider(l.Text, l.Box, 0)
+			consider(l.Text, textshot.Element{Kind: textshot.KindText, Box: l.Box, Text: l.Text, Score: l.Score}, 0)
 		}
 	}
 	return best, bestRank >= 0
+}
+
+// anchorToLabel makes sure a click on a text-bearing element lands on its
+// label. The detector's box is occasionally off: on the installer's
+// license page it once put "Agree" in the gap between the Disagree and
+// Agree arrow buttons, and a wide box spanning two buttons has its centre
+// between them. When the OCR line carrying the element's text is not
+// centred inside the box, or the box is more than twice as wide as the
+// line, the line's box is used instead: the label is part of the control.
+func (m Match) anchorToLabel(e textshot.Element) textshot.Element {
+	want := Normalize(e.Text)
+	if want == "" || e.Kind == textshot.KindIcon {
+		// An icon's label sits beside or under it; the icon is the target.
+		return e
+	}
+	for _, l := range m.Lines {
+		if Normalize(l.Text) != want {
+			continue
+		}
+		c := image.Pt((l.Box.Min.X+l.Box.Max.X)/2, (l.Box.Min.Y+l.Box.Max.Y)/2)
+		if !c.In(e.Box) || e.Box.Dx() > 2*l.Box.Dx() {
+			// The installer's buttons are an arrow circle above a label,
+			// and a click on the label alone did not always register
+			// (Install, 2026-10-10), so the box reaches up over the
+			// circle: its centre lands where the detector's box centre
+			// does when that box is right.
+			e.Box = image.Rect(l.Box.Min.X, l.Box.Min.Y-3*l.Box.Dy()/2, l.Box.Max.X, l.Box.Max.Y)
+		}
+		return e
+	}
+	return e
 }
 
 // locate resolves a catalog Element: the first OCR line containing its

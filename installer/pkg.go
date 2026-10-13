@@ -2,6 +2,7 @@ package installer
 
 import (
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -231,12 +232,37 @@ func extractBaseSystemFromSharedSupport(sharedSupportPath, dest string) (string,
 				}
 				return dest, nil
 			}
-			return "", fmt.Errorf("BaseSystem.dmg not found inside mounted SharedSupport.dmg")
 		}
+	}
+
+	// macOS 12+ (Monterey, Ventura, Sonoma, Sequoia): SharedSupport.dmg
+	// is itself a raw bootable disk image (starts with an HFS+/APFS boot
+	// sector, no UDIF koly trailer). Use it directly as installer media.
+	if isRawDiskImage(sharedSupportPath) {
+		if err := copyFile(sharedSupportPath, dest); err != nil {
+			return "", fmt.Errorf("copying SharedSupport.dmg as raw image: %w", err)
+		}
+		return dest, nil
 	}
 
 	return "", fmt.Errorf("could not extract BaseSystem.dmg from SharedSupport.dmg "+
 		"(install 7z, or run on macOS)")
+}
+
+// isRawDiskImage checks if a file starts with an x86 boot sector (EB xx 90)
+// or an Apple partition map, indicating it is already a raw disk image.
+func isRawDiskImage(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 3)
+	if _, err := f.Read(buf); err != nil {
+		return false
+	}
+	// x86 boot sector: JMP short + NOP
+	return buf[0] == 0xEB && buf[2] == 0x90
 }
 
 func findFirst(paths []string) string {
@@ -259,11 +285,20 @@ func findFirstGlob(patterns []string) string {
 }
 
 func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
+	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0o644)
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
 }
 
 func findFileRecursive(root, name string) string {

@@ -49,12 +49,14 @@ the unattended path and for hosts that are not Macs.
 | Mode | `mackit.yaml` | What you get | Disk |
 |---|---|---|---|
 | Recovery | `recovery: true` | The macOS Recovery environment (Terminal, Disk Utility, the installer), booted and recognized by OCR. Ephemeral. | ~8 GB sparse |
-| Full | default | A real macOS install. mackit boots the installer and waits for SSH; today you finish the installer and enable Remote Login over VNC, then your `boot` commands run. | ~40 GB |
+| Full | default | A real macOS install on a 64 GB disk. On Catalina mackit erases the disk from Recovery's Terminal, runs Reinstall macOS, waits through the installer's reboots, then boots Recovery once more to create your `user`, skip Setup Assistant and enable Remote Login from Terminal, and finally boots the installed system and runs your commands over SSH. | ~40 GB used |
 
 Recovery builds are driven end to end: mackit hides the OpenCore picker,
 waits for the Utilities screen, and runs the steps you configure, such as
-opening Terminal or clicking through Reinstall macOS. Full builds are not
-yet unattended; see [Not yet](#not-yet).
+opening Terminal or clicking through Reinstall macOS. Full builds are
+unattended end to end on Catalina (the install, then a headless setup
+from Recovery instead of Setup Assistant); see [Not yet](#not-yet) for
+the other versions.
 
 ## The config
 
@@ -89,6 +91,8 @@ tests so they cannot drift from the schema.
 
 - [`recovery`](examples/recovery): macOS Catalina Recovery, the mode the
   OCR screen catalog is verified against.
+- [`full-catalina`](examples/full-catalina): a full Catalina install,
+  driven from Recovery to an SSH-reachable system.
 - [`plain`](examples/plain): a full Sequoia install with SSH enabled.
 - [`nix`](examples/nix): a full install with Rosetta and the Nix installer
   run as boot commands.
@@ -130,11 +134,11 @@ on it.
 
 | Gap | Status | Where |
 |---|---|---|
-| Unattended Full install (erase the disk, run the installer, create the user) | planned; the Recovery steps for Reinstall macOS exist, the Disk Utility and Setup Assistant screens do not | `installer/flow/catalina.go`, `build/build.go` |
+| Setup Assistant | never shown: after the install the build boots Recovery again and `flow.HeadlessSetup` creates the user, marks setup done and enables Remote Login from Terminal. The user's post-login prompts (iCloud, analytics) are untouched and appear at a GUI login | `installer/flow/headless_setup.go`, `build/build.go` |
 | Screen catalogs for versions other than Catalina | Sequoia is a best guess, unverified; other versions are missing. A catalog is a list of screens and phrases | `installer/flow/<version>.go` |
 | arm64 guests | not supported. OpenCore boots x86_64 only; Apple Silicon macOS would need QEMU's `vmapple` machine | `vm/qemu`, `installer/opencore.go` |
 | OpenCore's own log | the bundled OpenCore is a RELEASE build and logs only warnings and errors; the kernel console is what you get | `installer/opencore_config.go` |
-| Keeping the VM after an e2e test | `MACKIT_NO_TEARDOWN` is read by the tests but not honored by Recovery builds | `build/build.go` |
+| Unattended Full build in one run | every step is verified live on Catalina (2026-10-10): the install flow through the installer's reboots, the headless setup, and SSH login to the installed system (which needs the `vmxnet3` NIC; see `build.GuestNIC`). The end-to-end run (`MACKIT_INSTALL_UNTIL=all`) is pending; the flow is verified a step at a time (`build.Config.StopAfterStep`, `MACKIT_INSTALL_UNTIL`, `MACKIT_VM_MEMORY_GB`) | `installer/flow/catalina_install.go`, `test/e2e/full_e2e_test.go` |
 
 Small PRs that add a screen catalog or a step come with a recorded
 screenshot under `test/testdata/screens/<version>/` and a unit test
@@ -158,6 +162,7 @@ against its OCR lines, which is how the Catalina catalog was built.
 | FAT and OpenCore image | `go test ./vm/qemu/ ./installer/` | the cached OpenCore image for the real-image cases, `mtools` for the firmware cross-check (skipped otherwise) |
 | Boot | `MACKIT_E2E=1 go test -run TestBoot_VerboseSerial -timeout 20m -v ./test/e2e/` | QEMU, network for the first download |
 | Recovery flow | `MACKIT_E2E=1 go test -run TestRecoveryFlow -timeout 50m -v ./test/e2e/` | the above, about ten minutes per test under TCG |
+| Full install | `MACKIT_E2E=1 MACKIT_INSTALL_UNTIL=all go test -run TestExampleFull_Install -timeout 420m -v ./test/e2e/` | the above plus network in the guest; about an hour under HVF, four under TCG, to a flattened image with SSH |
 
 Boot tests write `build.jsonl`, the serial log, screenshots, and OCR
 readings under `test/results/<timestamp>-<Test>/`, which is gitignored

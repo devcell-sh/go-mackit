@@ -1,0 +1,22 @@
+# Full macOS Sequoia install on arm64, driven by OCR from Recovery.
+# On Apple Silicon with HVF, the install completes in about 30 minutes.
+# On x86_64 under TCG, expect several hours.
+#
+# Build:  mackit build -f examples/full-sequoia/mackit.yaml macos-sequoia.qcow2
+# Boot:   mackit start macos-sequoia.qcow2   (SSH: ssh -p 20022 admin@127.0.0.1, password admin)
+#
+# The Sequoia install flow is not yet verified against a live VM.
+# Use MACKIT_NO_TEARDOWN=1 with the e2e test to iterate step by step.
+
+from: macos/sequoia
+
+hostname: mackit-sequoia
+
+user: admin
+password: admin
+
+commands:
+  firstboot:
+    - sudo systemsetup -getremotelogin
+  boot:
+    - sw_vers

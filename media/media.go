@@ -81,8 +81,16 @@ func FetchInstallerDMG(ctx context.Context, opts FetchOptions) (*FetchResult, er
 
 	if product.BaseSystemURL != "" {
 		logger.Info("downloading BaseSystem.dmg", "url", product.BaseSystemURL)
-		if err := downloadFile(ctx, product.BaseSystemURL, cachedPath, logger); err != nil {
+		if err := DownloadFile(ctx, product.BaseSystemURL, cachedPath, logger); err != nil {
 			return nil, fmt.Errorf("downloading BaseSystem.dmg: %w", err)
+		}
+	} else if _, ok := recoveryBoardIDs[version]; ok {
+		// macOS 11+: use Apple's Internet Recovery endpoint to download a
+		// small (~500-800 MB) BaseSystem.dmg instead of the 15 GB
+		// InstallAssistant.pkg.
+		logger.Info("fetching recovery image via osrecovery.apple.com", "version", version)
+		if err := FetchRecoveryImage(ctx, version, cachedPath, logger); err != nil {
+			return nil, fmt.Errorf("fetching recovery image: %w", err)
 		}
 	} else if product.InstallAssistantURL != "" {
 		pkgPath := filepath.Join(cacheDir, fmt.Sprintf("InstallAssistant-%s.pkg", product.Version))
@@ -94,7 +102,7 @@ func FetchInstallerDMG(ctx context.Context, opts FetchOptions) (*FetchResult, er
 					"url", product.InstallAssistantURL,
 					"size_gb", fmt.Sprintf("%.1f", float64(product.InstallAssistantSize)/(1024*1024*1024)),
 				)
-				if err := downloadFile(ctx, product.InstallAssistantURL, pkgPath, logger); err != nil {
+				if err := DownloadFile(ctx, product.InstallAssistantURL, pkgPath, logger); err != nil {
 					return nil, fmt.Errorf("downloading InstallAssistant.pkg: %w", err)
 				}
 			}
@@ -103,7 +111,7 @@ func FetchInstallerDMG(ctx context.Context, opts FetchOptions) (*FetchResult, er
 				"url", product.InstallAssistantURL,
 				"size_gb", fmt.Sprintf("%.1f", float64(product.InstallAssistantSize)/(1024*1024*1024)),
 			)
-			if err := downloadFile(ctx, product.InstallAssistantURL, pkgPath, logger); err != nil {
+			if err := DownloadFile(ctx, product.InstallAssistantURL, pkgPath, logger); err != nil {
 				return nil, fmt.Errorf("downloading InstallAssistant.pkg: %w", err)
 			}
 		}
@@ -117,12 +125,20 @@ func FetchInstallerDMG(ctx context.Context, opts FetchOptions) (*FetchResult, er
 
 		if dmgPath != cachedPath {
 			if err := os.Rename(dmgPath, cachedPath); err != nil {
-				data, readErr := os.ReadFile(dmgPath)
+				in, readErr := os.Open(dmgPath)
 				if readErr != nil {
 					return nil, fmt.Errorf("reading extracted dmg: %w", readErr)
 				}
-				if err := os.WriteFile(cachedPath, data, 0o644); err != nil {
-					return nil, fmt.Errorf("writing cached dmg: %w", err)
+				out, wErr := os.Create(cachedPath)
+				if wErr != nil {
+					in.Close()
+					return nil, fmt.Errorf("creating cached dmg: %w", wErr)
+				}
+				_, cpErr := io.Copy(out, in)
+				in.Close()
+				out.Close()
+				if cpErr != nil {
+					return nil, fmt.Errorf("copying cached dmg: %w", cpErr)
 				}
 			}
 		}

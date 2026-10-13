@@ -56,13 +56,15 @@ type OpenCoreConfig struct {
 }
 
 type Config struct {
-	From     string         `yaml:"from"`
-	Hostname string         `yaml:"hostname"`
-	Recovery bool           `yaml:"recovery"`
-	Files    []FileEntry    `yaml:"files"`
-	Ports    *PortsConfig   `yaml:"ports"`
+	From     string          `yaml:"from"`
+	Hostname string          `yaml:"hostname"`
+	Recovery bool            `yaml:"recovery"`
+	User     string          `yaml:"user"`
+	Password string          `yaml:"password"`
+	Files    []FileEntry     `yaml:"files"`
+	Ports    *PortsConfig    `yaml:"ports"`
 	OpenCore *OpenCoreConfig `yaml:"opencore"`
-	Commands commandsField  `yaml:"-"`
+	Commands commandsField   `yaml:"-"`
 }
 
 type commandsField struct {
@@ -74,6 +76,8 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		From     string          `yaml:"from"`
 		Hostname string          `yaml:"hostname"`
 		Recovery bool            `yaml:"recovery"`
+		User     string          `yaml:"user"`
+		Password string          `yaml:"password"`
 		Files    []FileEntry     `yaml:"files"`
 		Ports    *PortsConfig    `yaml:"ports"`
 		OpenCore *OpenCoreConfig `yaml:"opencore"`
@@ -86,6 +90,8 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	c.From = p.From
 	c.Hostname = p.Hostname
 	c.Recovery = p.Recovery
+	c.User = p.User
+	c.Password = p.Password
 	c.Files = p.Files
 	c.Ports = p.Ports
 	c.OpenCore = p.OpenCore

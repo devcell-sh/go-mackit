@@ -20,6 +20,28 @@ hostname: myvm
 	assert.False(t, cfg.Recovery)
 }
 
+func TestParse_UserPassword(t *testing.T) {
+	cfg, err := Parse([]byte(`
+from: macos/catalina-x86_64
+user: dev
+password: s3cret
+`))
+	require.NoError(t, err)
+	assert.Equal(t, "dev", cfg.User)
+	assert.Equal(t, "s3cret", cfg.Password)
+	opts, err := cfg.ToBuildOpts()
+	require.NoError(t, err)
+	assert.Equal(t, "dev", opts.User)
+	assert.Equal(t, "s3cret", opts.Password)
+
+	cfg, err = Parse([]byte("from: macos/catalina-x86_64\n"))
+	require.NoError(t, err)
+	opts, err = cfg.ToBuildOpts()
+	require.NoError(t, err)
+	assert.Equal(t, "admin", opts.User, "default user")
+	assert.Equal(t, "admin", opts.Password, "default password")
+}
+
 func TestParse_CommandsFlat(t *testing.T) {
 	cfg, err := Parse([]byte(`
 commands:

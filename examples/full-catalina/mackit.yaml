@@ -1,0 +1,26 @@
+# Full macOS Catalina install, driven by OCR from Recovery: erase the
+# target disk from Terminal, reinstall macOS onto it, wait for the
+# installer and its reboots, then boot Recovery once more to create the
+# user, skip Setup Assistant and enable Remote Login, and finally boot the
+# installed system and run the commands below over SSH.
+#
+# Build:  mackit build -f examples/full-catalina/mackit.yaml macos-catalina.qcow2
+# Boot:   mackit start macos-catalina.qcow2   (SSH: ssh -p 20022 admin@127.0.0.1, password admin)
+#
+# Catalina is the version whose Recovery and installer screens are
+# verified (installer/flow/catalina.go). Reinstall macOS fetches the full
+# installer from Apple during the install, so the guest needs network.
+
+from: macos/catalina
+
+hostname: mackit-catalina
+
+# The account the build creates; commands run as it with passwordless sudo.
+user: admin
+password: admin
+
+commands:
+  firstboot:
+    - sudo systemsetup -getremotelogin
+  boot:
+    - sw_vers

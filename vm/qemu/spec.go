@@ -31,6 +31,9 @@ type Spec struct {
 
 	MachineType string
 	CPU         string
+	// NIC is the QEMU network device model (default virtio-net-pci).
+	// Catalina needs vmxnet3: see DefaultNIC.
+	NIC string
 
 	SerialLogPath          string
 	GuestStructuredLogPath string
@@ -105,12 +108,9 @@ func defaultAccel() string {
 
 func defaultAccelForArch(guestArch string) string {
 	hostArch := runtime.GOARCH
-	crossArch := false
-	if isX86Arch(guestArch) != isX86Arch(hostArch) {
-		crossArch = true
-	}
+	crossArch := isX86Arch(guestArch) != isX86Arch(hostArch)
 	if crossArch {
-		return "tcg,thread=multi"
+		return tcgAccel
 	}
 	switch runtime.GOOS {
 	case "darwin":
@@ -119,10 +119,35 @@ func defaultAccelForArch(guestArch string) string {
 		if _, err := os.Stat("/dev/kvm"); err == nil {
 			return "kvm"
 		}
-		return "tcg,thread=multi"
+		return tcgAccel
+	case "windows":
+		return "whpx"
 	default:
-		return "tcg,thread=multi"
+		return tcgAccel
 	}
+}
+
+const tcgAccel = "tcg,thread=multi,tb-size=512"
+
+// TCGMaxCPUs is the recommended vCPU cap for TCG. More vCPUs add
+// contention without meaningful throughput under software emulation.
+const TCGMaxCPUs = 2
+
+// IsTCG reports whether the accelerator string selects TCG.
+func IsTCG(accel string) bool {
+	return accelBase(accel) == "tcg"
+}
+
+// HugepagesArgs returns QEMU flags to back guest RAM with hugepages.
+// Returns nil when hugepages are not available.
+func HugepagesArgs() []string {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	if _, err := os.Stat("/dev/hugepages"); err != nil {
+		return nil
+	}
+	return []string{"-mem-path", "/dev/hugepages", "-mem-prealloc"}
 }
 
 func isX86Arch(arch string) bool {
@@ -250,7 +275,12 @@ func PrepareVarsFile(firmwarePath, varsPath string) error {
 		}
 		return os.WriteFile(varsPath, data, 0o644)
 	}
-	// No vars template found: create a 128KB empty vars store.
-	empty := make([]byte, 128*1024)
+	// No vars template: create an empty vars store matching the firmware
+	// code size. The virt machine's pflash pair must be the same size.
+	size := int64(128 * 1024)
+	if info, err := os.Stat(firmwarePath); err == nil {
+		size = info.Size()
+	}
+	empty := make([]byte, size)
 	return os.WriteFile(varsPath, empty, 0o644)
 }

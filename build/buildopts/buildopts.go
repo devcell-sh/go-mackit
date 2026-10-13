@@ -132,7 +132,22 @@ type BuildOpts struct {
 	Ports           Ports
 	Hostname        string
 	OpenCoreVersion string
+	// User and Password are the administrator account a Full build creates
+	// in the installed system (DefaultUser and DefaultPassword when empty).
+	// Hooks run over SSH as this user, with passwordless sudo. The password
+	// is typed into the Recovery Terminal during the build, so it shows in
+	// the build's screenshots and OCR readings: an image default to change
+	// at first login, not a secret.
+	User     string
+	Password string
 }
+
+// DefaultUser and DefaultPassword are the account of a Full build whose
+// config names none.
+const (
+	DefaultUser     = "admin"
+	DefaultPassword = "admin"
+)
 
 func (o *BuildOpts) Validate() error {
 	if o.Recovery {
@@ -148,6 +163,12 @@ func (o *BuildOpts) Validate() error {
 func (o *BuildOpts) ApplyDefaults() {
 	if o.From == "" {
 		o.From = DefaultFrom()
+	}
+	if o.User == "" {
+		o.User = DefaultUser
+	}
+	if o.Password == "" {
+		o.Password = DefaultPassword
 	}
 	for i := range o.Hooks {
 		o.Hooks[i].applyDefaults()

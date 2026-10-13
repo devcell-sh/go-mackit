@@ -7,34 +7,35 @@ import (
 	"net/http"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 )
 
 const CatalogURL = "https://swscan.apple.com/content/catalogs/others/index-15-14-13-12-10.16-10.15-10.14-10.13-10.12-10.11-10.10-10.9-mountainlion-lion-snowleopard-leopard.merged-1.sucatalog"
 
 var versionNames = map[string]string{
-	"goldengate":  "27",
-	"tahoe":       "26",
-	"sequoia":     "15",
-	"sonoma":      "14",
-	"ventura":     "13",
-	"monterey":    "12",
-	"bigsur":      "11",
-	"catalina":    "10.15",
-	"mojave":      "10.14",
-	"highsierra":  "10.13",
+	"goldengate": "27",
+	"tahoe":      "26",
+	"sequoia":    "15",
+	"sonoma":     "14",
+	"ventura":    "13",
+	"monterey":   "12",
+	"bigsur":     "11",
+	"catalina":   "10.15",
+	"mojave":     "10.14",
+	"highsierra": "10.13",
 }
 
 type CatalogProduct struct {
-	ID                  string
-	Version             string
-	Build               string
-	Title               string
-	BaseSystemURL       string
-	BaseSystemSize      int64
-	InstallAssistantURL string
+	ID                   string
+	Version              string
+	Build                string
+	Title                string
+	BaseSystemURL        string
+	BaseSystemSize       int64
+	InstallAssistantURL  string
 	InstallAssistantSize int64
-	DistURL             string
+	DistURL              string
 }
 
 func (p *CatalogProduct) InstallerURL() string {
@@ -265,6 +266,16 @@ func validateVersion(version string) error {
 		known = append(known, k)
 	}
 	return fmt.Errorf("unknown macOS version %q (known: %s)", version, strings.Join(known, ", "))
+}
+
+// VersionNames lists the known macOS version codenames, sorted.
+func VersionNames() []string {
+	names := make([]string, 0, len(versionNames))
+	for n := range versionNames {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func VersionNumber(name string) string {

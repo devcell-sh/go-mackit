@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
+	"image/draw"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,18 +27,28 @@ type fakeScreen struct {
 	i       int
 	onInput bool
 	byImg   map[image.Image][]textshot.TextResult
+	// styles overrides the Style of elements by text ("Install": disabled).
+	styles map[string]textshot.Style
+	// textCalls and screenCalls count model runs.
+	textCalls, screenCalls int
 }
 
 func newFakeScreen(frames ...[]textshot.TextResult) *fakeScreen {
-	return &fakeScreen{frames: frames, byImg: map[image.Image][]textshot.TextResult{}}
+	return &fakeScreen{frames: frames, byImg: map[image.Image][]textshot.TextResult{}, styles: map[string]textshot.Style{}}
 }
 
+// Capture paints the frame index into a block of the image so that
+// textshot.Diff sees a change whenever the frame advances (a different
+// frame with identical lines still counts as a new capture).
 func (f *fakeScreen) Capture(context.Context) (image.Image, error) {
-	frame := f.frames[min(f.i, len(f.frames)-1)]
+	idx := min(f.i, len(f.frames)-1)
+	frame := f.frames[idx]
 	if !f.onInput {
 		f.i++
 	}
 	img := image.NewRGBA(hd)
+	c := color.RGBA{R: uint8(idx * 40), G: uint8(f.i * 40), B: 200, A: 255}
+	draw.Draw(img, image.Rect(0, 0, 200, 200), &image.Uniform{c}, image.Point{}, draw.Src)
 	f.byImg[img] = frame
 	return img, nil
 }
@@ -48,36 +60,47 @@ func (f *fakeScreen) advance() {
 }
 
 func (f *fakeScreen) DetectText(_ context.Context, img image.Image) ([]textshot.TextResult, error) {
+	f.textCalls++
 	return f.byImg[img], nil
 }
 
-// DetectElements turns the frame's lines into text elements, plus a
-// detected interactable for the Utilities menu label so snapping is
-// exercised.
-func (f *fakeScreen) DetectElements(_ context.Context, img image.Image) ([]textshot.Element, error) {
-	var out []textshot.Element
-	for _, l := range f.byImg[img] {
+// DetectScreen turns the frame's lines into text elements (buttons for
+// Continue/Agree/Install), plus a detected interactable for the Utilities
+// menu label so snapping is exercised, and a Disk Utility row icon.
+func (f *fakeScreen) DetectScreen(_ context.Context, img image.Image, lines []textshot.TextResult) (*textshot.Screen, error) {
+	f.screenCalls++
+	scr := &textshot.Screen{Size: img.Bounds().Size(), Theme: textshot.ThemeLight}
+	for _, l := range lines {
 		kind := textshot.KindText
-		if l.Text == "Continue" {
+		switch l.Text {
+		case "Continue", "Agree", "Install":
 			kind = textshot.KindButton
 		}
-		out = append(out, textshot.Element{Key: string(kind) + ":" + l.Text, Kind: kind, Box: l.Box, Text: l.Text, Score: l.Score})
+		scr.Elements = append(scr.Elements, textshot.Element{Key: string(kind) + ":" + l.Text, Kind: kind, Box: l.Box, Text: l.Text, Score: l.Score, Style: f.styles[l.Text]})
 	}
-	if len(f.byImg[img]) > 0 && f.byImg[img][0].Text == utilitiesLines[0].Text {
-		out = append(out, textshot.Element{Key: "icon@262,3", Kind: textshot.KindIcon, Box: image.Rect(262, 3, 311, 20), Score: 0.5})
+	if len(lines) > 0 && lines[0].Text == utilitiesLines[0].Text {
+		scr.Elements = append(scr.Elements,
+			textshot.Element{Key: "icon@262,3", Kind: textshot.KindIcon, Box: image.Rect(262, 3, 311, 20), Score: 0.5},
+			textshot.Element{Key: "icon:Disk Utility", Kind: textshot.KindIcon, Box: image.Rect(700, 500, 740, 540), Text: "Disk Utility", Score: 0.6},
+		)
 	}
-	return out, nil
+	return scr, nil
 }
 
 type fakeInput struct {
 	log    []string
 	screen *fakeScreen
+	// onInput runs after each input, to change styles like a real UI.
+	onInput func()
 }
 
 func (f *fakeInput) record(s string) error {
 	f.log = append(f.log, s)
 	if f.screen != nil {
 		f.screen.advance()
+	}
+	if f.onInput != nil {
+		f.onInput()
 	}
 	return nil
 }
@@ -274,4 +297,211 @@ func TestObserveSavesReadingsInOCRDir(t *testing.T) {
 	require.Len(t, found.Lines, len(utilitiesLines))
 	require.Equal(t, utilitiesLines[0].Text, found.Lines[0].Text)
 	require.Equal(t, boxOf(utilitiesLines[0].Box), found.Lines[0].Box)
+}
+
+func TestObserveReusesReadingForUnchangedFrame(t *testing.T) {
+	screen := newFakeScreen(utilitiesLines)
+	screen.onInput = true // the frame never advances, so every capture looks the same
+	r := newRunner(screen, &fakeInput{})
+	for range 3 {
+		m, ok, err := r.Observe(context.Background(), false)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Equal(t, "recovery.utilities", m.Name())
+	}
+	require.Equal(t, 1, screen.textCalls, "OCR runs once for three identical frames")
+	require.Equal(t, 0, screen.screenCalls)
+
+	// Elements asked for on the same frame: the detector runs once, then
+	// the reading with elements is reused.
+	for range 2 {
+		m, _, err := r.Observe(context.Background(), true)
+		require.NoError(t, err)
+		require.NotNil(t, m.Elements)
+	}
+	require.Equal(t, 1, screen.textCalls)
+	require.Equal(t, 1, screen.screenCalls)
+}
+
+func TestWaitForSkipsDetectorUntilScreenMatches(t *testing.T) {
+	screen := newFakeScreen(loadingLines, loadingLines, introLines, introLines, utilitiesLines)
+	r := newRunner(screen, &fakeInput{})
+	_, err := r.WaitFor(context.Background(), "recovery.utilities", []string{"text:Reinstall macOS"}, time.Second)
+	require.NoError(t, err)
+	require.Equal(t, 5, screen.textCalls, "text read on every changed frame")
+	require.Equal(t, 1, screen.screenCalls, "detector only on the utilities frame")
+
+	// Without a screen name, the selector's text gates the detector.
+	screen = newFakeScreen(loadingLines, utilitiesLines, introLines)
+	r = newRunner(screen, &fakeInput{})
+	_, err = r.WaitFor(context.Background(), "", []string{"button:Continue"}, time.Second)
+	require.NoError(t, err)
+	require.Equal(t, 1, screen.screenCalls, "detector only once Continue is among the lines")
+}
+
+func TestFindSkipsDisabledButtonAndExplains(t *testing.T) {
+	screen := newFakeScreen(targetLines)
+	screen.styles["Install"] = textshot.Style{Disabled: true, Contrast: 1.4}
+	r := newRunner(screen, &fakeInput{})
+	m, _, err := r.Observe(context.Background(), true)
+	require.NoError(t, err)
+	_, ok := m.Find("button:Install")
+	require.False(t, ok, "a disabled button does not resolve")
+	require.Contains(t, m.Explain("button:Install"), "disabled")
+	require.Empty(t, m.Explain("button:Back"), "absent elements have no explanation")
+
+	_, err = r.WaitFor(context.Background(), "installer.target", []string{"button:Install"}, 20*time.Millisecond)
+	require.ErrorIs(t, err, ErrTimeout)
+	require.Contains(t, err.Error(), `"button:Install" is on screen but disabled`)
+
+	screen.styles["Install"] = textshot.Style{Contrast: 9}
+	screen.i++ // a new frame, so the reading is refreshed
+	m, _, err = r.Observe(context.Background(), true)
+	require.NoError(t, err)
+	_, ok = m.Find("button:Install")
+	require.True(t, ok)
+}
+
+func TestClickDefaultButtonPressesEnter(t *testing.T) {
+	screen := newFakeScreen(introLines)
+	screen.styles["Continue"] = textshot.Style{Highlighted: true, Contrast: 8}
+	in := &fakeInput{}
+	r := newRunner(screen, in)
+	r.EnterOnDefault = true
+	require.NoError(t, r.Run(context.Background(), []Step{{Elements: []string{"button:Continue"}, Actions: []Action{Click("button:Continue")}}}))
+	require.Equal(t, []string{"keys[ret]"}, in.log)
+
+	r.EnterOnDefault = false
+	in.log = nil
+	screen.i = 0
+	require.NoError(t, r.Run(context.Background(), []Step{{Elements: []string{"button:Continue"}, Actions: []Action{Click("button:Continue")}}}))
+	require.Len(t, in.log, 1)
+	require.Contains(t, in.log[0], "click(")
+}
+
+func TestFindByTextshotKey(t *testing.T) {
+	screen := newFakeScreen(utilitiesLines)
+	r := newRunner(screen, &fakeInput{})
+	m, _, err := r.Observe(context.Background(), true)
+	require.NoError(t, err)
+	box, ok := m.Find("icon:Disk Utility")
+	require.True(t, ok)
+	require.Equal(t, image.Rect(700, 500, 740, 540), box)
+	_, ok = m.Find("icon:Nothing")
+	require.False(t, ok)
+	_, ok = m.Find("icon@262,3")
+	require.True(t, ok)
+}
+
+func TestSettleWaitsUntilFramesStopChanging(t *testing.T) {
+	// Each capture paints a new frame index while the fake advances, so
+	// the settle loop sees change until the last frame repeats.
+	screen := newFakeScreen(utilitiesLines, utilitiesLines, utilitiesLines, utilitiesLines)
+	in := &fakeInput{}
+	r := newRunner(screen, in)
+	r.SettleTimeout = time.Second
+	m, _, err := r.Observe(context.Background(), false)
+	require.NoError(t, err)
+	before := screen.i
+	require.NoError(t, r.doAll(context.Background(), m, []Action{Keys("ret")}))
+	require.GreaterOrEqual(t, screen.i-before, 2, "at least two captures to see the screen settle")
+}
+
+// TestClickRereadsScreenWhenTargetIsStale is the Utilities page: Continue
+// is disabled until a row is selected, so the second click of the step
+// must act on the screen after the first click, not on the frame the
+// step was matched against.
+func TestClickRereadsScreenWhenTargetIsStale(t *testing.T) {
+	screen := newFakeScreen(utilitiesLines, utilitiesLines)
+	screen.onInput = true
+	screen.styles["Continue"] = textshot.Style{Disabled: true, Contrast: 1.8}
+	in := &fakeInput{screen: screen}
+	in.onInput = func() { screen.styles["Continue"] = textshot.Style{Contrast: 9} }
+	r := newRunner(screen, in)
+	err := r.Run(context.Background(), []Step{{
+		Screen:   "recovery.utilities",
+		Elements: []string{"text:Reinstall macOS"},
+		Actions:  []Action{Click("text:Reinstall macOS"), Click("button:Continue")},
+	}})
+	require.NoError(t, err)
+	require.Len(t, in.log, 2)
+	require.Contains(t, in.log[1], "click(")
+	require.Equal(t, 2, screen.screenCalls, "detector re-ran once for the stale target")
+}
+
+// driftScreen paints a little more of the frame on every capture, each
+// increment under the change threshold on its own: Terminal printing
+// lines one at a time, a progress bar creeping. The reading must be
+// refreshed once the changes add up against the last frame actually read.
+type driftScreen struct {
+	fakeScreen
+	n int
+}
+
+func (d *driftScreen) Capture(context.Context) (image.Image, error) {
+	d.n++
+	img := image.NewRGBA(hd)
+	// 30x30 = 900 px per step, below DefaultChangeThreshold (1036 px of 1920x1080).
+	draw.Draw(img, image.Rect(0, 0, 30*d.n, 30), image.White, image.Point{}, draw.Src)
+	frame := d.frames[min(d.n-1, len(d.frames)-1)]
+	d.byImg[img] = frame
+	return img, nil
+}
+
+func TestObserveRereadsWhenSmallChangesAddUp(t *testing.T) {
+	screen := &driftScreen{fakeScreen: *newFakeScreen(terminalLines, terminalLines, terminalEraseLines)}
+	shots := t.TempDir()
+	r := newRunner(&screen.fakeScreen, &fakeInput{})
+	r.Capture = screen.Capture
+	r.OCR = screen
+	r.ShotDir = shots
+
+	m, _, err := r.Observe(context.Background(), false)
+	require.NoError(t, err)
+	require.Equal(t, 1, screen.textCalls)
+	require.NotContains(t, strings.ToLower(m.Text()), "finished erase")
+
+	// Second capture differs from the first by 900 px: reused, and no
+	// frame saved for it.
+	m, _, err = r.Observe(context.Background(), false)
+	require.NoError(t, err)
+	require.Equal(t, 1, screen.textCalls, "a change under the threshold reuses the reading")
+	require.NotContains(t, strings.ToLower(m.Text()), "finished erase")
+
+	// Third capture differs from the first (the last read frame) by 1800
+	// px even though it differs from the second by only 900: read again.
+	m, _, err = r.Observe(context.Background(), false)
+	require.NoError(t, err)
+	require.Equal(t, 2, screen.textCalls, "drift against the last read frame triggers a new read")
+	require.Contains(t, strings.ToLower(m.Text()), "finished erase")
+
+	entries, err := os.ReadDir(shots)
+	require.NoError(t, err)
+	require.Len(t, entries, 2, "one frame per model run, none for the reused reading")
+}
+
+// progressLines is the installer's progress page right after Install.
+var progressLines = []textshot.TextResult{
+	{Text: "Install macOS Catalina Edit Window", Box: image.Rect(0, 0, 400, 20)},
+	{Text: "macOS Catalina will be installed on the disk \"Macintosh HD\".", Box: image.Rect(760, 440, 1160, 458)},
+	{Text: "About 19 minutes remaining", Box: image.Rect(880, 630, 1040, 650)},
+}
+
+func TestStepDoneOnWhenUIMovesOn(t *testing.T) {
+	// Waiting for the target page's Install button, but the installer has
+	// already gone to its progress page: the step ends without clicking.
+	screen := newFakeScreen(progressLines)
+	in := &fakeInput{}
+	r := newRunner(screen, in)
+	steps := []Step{{
+		Name: "install", Screen: "installer.target", Elements: []string{"button:Install"},
+		Timeout: time.Second, DoneOn: []string{"installer.progress"},
+		Actions: []Action{Click("button:Install")},
+	}}
+	require.NoError(t, r.Run(context.Background(), steps))
+	require.Empty(t, in.log, "no click when the UI moved on")
+
+	// An unknown done-on screen is a flow bug.
+	steps[0].DoneOn = []string{"installer.done"}
+	require.ErrorContains(t, r.Run(context.Background(), steps), `done-on screen "installer.done"`)
 }

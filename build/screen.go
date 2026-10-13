@@ -19,8 +19,9 @@ import (
 
 // screenDriver is the OCR-driven installer UI driver for one VM.
 type screenDriver struct {
-	runner *flow.Runner
-	engine *textshot.Engine
+	runner  *flow.Runner
+	engine  *textshot.Engine
+	version string // macOS codename the catalog is for
 }
 
 // newScreenDriver prepares OCR screen detection for the VM behind qmpSock.
@@ -46,9 +47,10 @@ func newScreenDriver(ctx context.Context, c Config, qmpSock, shotDir string, log
 		return nil
 	}
 
-	// One OCR thread and a relaxed poll interval: on TCG hosts the guest
-	// shares the CPUs with the OCR, and a busy OCR loop visibly slows the
-	// boot.
+	// One OCR thread: on TCG hosts the guest shares the CPUs with the OCR,
+	// and a busy OCR loop visibly slows the boot. The runner only runs the
+	// models when the frame changed, and the element detector only when
+	// the text says the wanted screen is up.
 	opts := textshot.Options{Logger: logger.With(logx.ServiceKey, "textshot"), Threads: 1}
 	if c.CacheDir != "" {
 		opts.CacheDir = filepath.Join(c.CacheDir, "textshot")
@@ -64,24 +66,34 @@ func newScreenDriver(ctx context.Context, c Config, qmpSock, shotDir string, log
 	}
 
 	runner := &flow.Runner{
-		Capture:  func(context.Context) (image.Image, error) { return qemu.Screendump(qmpSock) },
-		OCR:      engine,
-		Input:    qemu.QMPInput{Sock: qmpSock},
-		Catalog:  catalog,
-		Logger:   logger.With("component", "flow"),
-		Interval: 5 * time.Second,
+		Capture: func(context.Context) (image.Image, error) { return qemu.Screendump(qmpSock) },
+		OCR:     flow.NewEngineOCR(engine),
+		Input:   qemu.QMPInput{Sock: qmpSock},
+		Catalog: catalog,
+		Logger:  logger.With("component", "flow"),
+		// Captures are cheap and unchanged frames reuse their reading, so
+		// poll often; after an action wait for the UI to stop moving.
+		Interval:       2 * time.Second,
+		SettleDelay:    300 * time.Millisecond,
+		SettleTimeout:  3 * time.Second,
+		EnterOnDefault: true,
 	}
 	if shotDir != "" && logger.Enabled(ctx, slog.LevelDebug) {
 		runner.ShotDir = shotDir
 		runner.OCRDir = filepath.Join(filepath.Dir(shotDir), "ocr")
 		logger.Debug("saving every OCR frame and reading", "frames", runner.ShotDir, "readings", runner.OCRDir)
 	}
-	return &screenDriver{engine: engine, runner: runner}
+	return &screenDriver{engine: engine, runner: runner, version: version}
 }
 
+
+// Close releases the OCR engine and its models (several hundred MB of
+// memory). Safe to call more than once; the build calls it as soon as the
+// screen no longer needs reading, before it idles or waits for SSH.
 func (d *screenDriver) Close() {
 	if d != nil && d.engine != nil {
 		d.engine.Close()
+		d.engine = nil
 	}
 }
 
@@ -90,10 +102,13 @@ func (d *screenDriver) Close() {
 func bootSteps(recoveryTimeout time.Duration) []flow.Step {
 	return []flow.Step{
 		{
-			Name:      "macOS Recovery",
-			Screen:    "recovery.utilities",
-			Timeout:   recoveryTimeout,
-			Reactions: []flow.Reaction{{Screen: "opencore.picker", Actions: []flow.Action{flow.Keys("ret")}}},
+			Name:    "macOS Recovery",
+			Screen:  "recovery.utilities",
+			Timeout: recoveryTimeout,
+			Reactions: []flow.Reaction{
+				{Screen: "opencore.picker", Actions: []flow.Action{flow.Keys("ret")}},
+			},
+			DoneOn: []string{"recovery.language"},
 		},
 	}
 }
@@ -119,6 +134,26 @@ func autoSelectPicker(qmpSock string, logger *slog.Logger) {
 	} else {
 		logger.Info("sent Enter to OpenCore boot picker")
 	}
+}
+
+// driveInstall boots to macOS Recovery and runs the unattended install
+// flow for the catalog's macOS version onto a target disk of diskGB.
+// Versions without a flow return an error naming it.
+func (d *screenDriver) driveInstall(ctx context.Context, qmpSock string, diskGB int, timeout time.Duration, stopAfter string) error {
+	steps, err := flow.InstallStepsFor(d.version, diskGB)
+	if err != nil {
+		return err
+	}
+	if steps, err = flow.StepsThrough(steps, stopAfter); err != nil {
+		return err
+	}
+	if err := d.driveRecovery(ctx, qmpSock, nil, timeout); err != nil {
+		return err
+	}
+	if err := d.runner.Run(ctx, steps); err != nil {
+		return fmt.Errorf("install steps: %w", err)
+	}
+	return nil
 }
 
 // driveRecovery waits for macOS Recovery to reach the Utilities screen and
