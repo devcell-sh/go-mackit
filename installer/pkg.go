@@ -22,16 +22,35 @@ func ExtractBaseSystemFromPkg(pkgPath, destDir string) (string, error) {
 		return extractWithPkgutil(pkgPath, destDir, dest)
 	}
 
+	// Try each extractor in order. Some builds of xar silently fail on
+	// large files (>16 GB SharedSupport.dmg), so fall through on "not
+	// found" errors rather than returning immediately.
+	type extractor struct {
+		name string
+		bin  string
+		fn   func(bin, pkg, workDir, dest string) (string, error)
+	}
+	var extractors []extractor
 	if path, err := exec.LookPath("xar"); err == nil {
-		return extractWithXar(path, pkgPath, destDir, dest)
+		extractors = append(extractors, extractor{"xar", path, extractWithXar})
 	}
-
 	if path, err := exec.LookPath("7z"); err == nil {
-		return extractWith7z(path, pkgPath, destDir, dest)
+		extractors = append(extractors, extractor{"7z", path, extractWith7z})
 	}
-
 	if path, err := exec.LookPath("bsdtar"); err == nil {
-		return extractWithBsdtar(path, pkgPath, destDir, dest)
+		extractors = append(extractors, extractor{"bsdtar", path, extractWithBsdtar})
+	}
+	for _, e := range extractors {
+		result, err := e.fn(e.bin, pkgPath, destDir, dest)
+		if err == nil {
+			return result, nil
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			return "", err
+		}
+	}
+	if len(extractors) > 0 {
+		return "", fmt.Errorf("BaseSystem.dmg not found inside InstallAssistant.pkg (tried all available extractors)")
 	}
 
 	return "", fmt.Errorf("cannot extract BaseSystem.dmg from InstallAssistant.pkg: "+
