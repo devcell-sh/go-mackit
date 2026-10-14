@@ -34,6 +34,11 @@ type Spec struct {
 	// NIC is the QEMU network device model (default virtio-net-pci).
 	// Catalina needs vmxnet3: see DefaultNIC.
 	NIC string
+	// VGA overrides the default QEMU VGA adapter. Values: "vmware",
+	// "std", "virtio", "qxl", "none". Empty uses the machine default
+	// (Bochs on q35). Tahoe needs "vmware": its WindowServer has no
+	// Bochs VGA driver.
+	VGA string
 
 	SerialLogPath          string
 	GuestStructuredLogPath string

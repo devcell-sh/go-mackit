@@ -1,0 +1,22 @@
+# Full macOS Tahoe install on x86_64, driven by OCR through Setup Assistant.
+# Unlike Catalina and Sequoia, this flow drives through Setup Assistant
+# instead of bypassing it with HeadlessSetup.
+#
+# Build:  mackit build -f examples/full-tahoe/mackit.yaml macos-tahoe.qcow2
+# Boot:   mackit start macos-tahoe.qcow2   (SSH: ssh -p 20022 admin@127.0.0.1, password admin)
+#
+# The Tahoe install flow is not yet verified against a live VM.
+# Use MACKIT_NO_TEARDOWN=1 with the e2e test to iterate step by step.
+
+from: macos/tahoe
+
+hostname: mackit-tahoe
+
+user: admin
+password: admin
+
+commands:
+  firstboot:
+    - sudo systemsetup -getremotelogin
+  boot:
+    - sw_vers

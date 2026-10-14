@@ -159,6 +159,8 @@ func InstallStepsFor(version string, sizeGB int) ([]Step, error) {
 		return CatalinaInstall(sizeGB), nil
 	case "sequoia":
 		return SequoiaInstall(sizeGB), nil
+	case "tahoe":
+		return TahoeInstall(sizeGB), nil
 	}
 	return nil, fmt.Errorf("no unattended install flow for macOS %q yet (see installer/flow)", version)
 }

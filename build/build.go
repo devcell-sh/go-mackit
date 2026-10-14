@@ -99,6 +99,7 @@ type fullBuild struct {
 	accel    string
 	display  string
 	nic      string
+	vga      string
 	version  string
 	creds    sshCreds
 }
@@ -196,6 +197,7 @@ func Full(ctx context.Context, c Config) error {
 		accel:    accel,
 		display:  display,
 		nic:      GuestNIC(version),
+		vga:      GuestVGA(version),
 		version:  version,
 		creds:    c.creds(),
 	}
@@ -214,9 +216,11 @@ func Full(ctx context.Context, c Config) error {
 		}
 		return err
 	}
-	idle, err := b.headlessSetup(ctx)
-	if err != nil || idle {
-		return err
+	if !flow.HasSetupAssistant(b.version) {
+		idle, err := b.headlessSetup(ctx)
+		if err != nil || idle {
+			return err
+		}
 	}
 	if err := b.provision(ctx); err != nil {
 		return err
@@ -234,12 +238,14 @@ func (b *fullBuild) checkStopStep() error {
 	if hasStep(install, b.StopAfterStep) {
 		return nil
 	}
-	headless, err := flow.HeadlessSetup(b.creds.User, b.creds.Password)
-	if err != nil {
-		return err
-	}
-	if hasStep(headless, b.StopAfterStep) {
-		return nil
+	if !flow.HasSetupAssistant(b.version) {
+		headless, err := flow.HeadlessSetup(b.creds.User, b.creds.Password)
+		if err != nil {
+			return err
+		}
+		if hasStep(headless, b.StopAfterStep) {
+			return nil
+		}
 	}
 	return fmt.Errorf("StopAfterStep %q names no step of the %s install or headless setup flow", b.StopAfterStep, b.version)
 }
@@ -269,6 +275,7 @@ func (b *fullBuild) installConfig() qemu.InstallConfig {
 		Accel:        b.accel,
 		DisplayType:  b.display,
 		NIC:          b.nic,
+		VGA:          b.vga,
 		OutputDir:    b.workDir,
 	}
 }
@@ -286,6 +293,7 @@ func (b *fullBuild) runConfig() qemu.RunConfig {
 		Accel:        b.accel,
 		DisplayType:  b.display,
 		NIC:          b.nic,
+		VGA:          b.vga,
 		OutputDir:    b.workDir,
 		VMName:       "mackit-install",
 	}

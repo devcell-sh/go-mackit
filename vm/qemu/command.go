@@ -117,6 +117,9 @@ func baseCommand(spec Spec) []string {
 		"-device", nic+",netdev=net0",
 	)
 
+	if spec.VGA != "" {
+		argv = append(argv, "-vga", spec.VGA)
+	}
 	argv = append(argv, "-display", spec.DisplayType)
 
 	// Input: EHCI USB for macOS (xHCI was ignored by macOS Recovery).

@@ -36,6 +36,7 @@ type InstallConfig struct {
 	Accel       string
 	DisplayType string
 	NIC         string
+	VGA         string
 
 	OutputDir         string
 	StructuredLogPath string
@@ -61,6 +62,7 @@ type RunConfig struct {
 	Accel       string
 	DisplayType string
 	NIC         string
+	VGA         string
 	Detach      bool
 
 	OutputDir         string
@@ -194,6 +196,7 @@ func StartInstall(ctx context.Context, c InstallConfig) (*InstallVM, error) {
 		QMPSocketDir:           filepath.Join(outDir, "install"),
 		Accel:                  accel,
 		NIC:                    c.NIC,
+		VGA:                    c.VGA,
 		SSHPort:                c.SSHPort,
 		SSHGuestPort:           c.SSHGuestPort,
 		VNCPort:                c.VNCPort,
@@ -266,6 +269,7 @@ func StartRun(ctx context.Context, c RunConfig) (*InstallVM, error) {
 		QMPSocketDir:           c.OutputDir,
 		Accel:                  accel,
 		NIC:                    c.NIC,
+		VGA:                    c.VGA,
 		SSHPort:                c.SSHPort,
 		SSHGuestPort:           c.SSHGuestPort,
 		SSHHost:                c.SSHHost,

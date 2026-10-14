@@ -61,6 +61,13 @@ var bootVerboseScreen = Screen{
 var catalogs = map[string]*Catalog{
 	"catalina": Catalina,
 	"sequoia":  Sequoia,
+	"tahoe":    Tahoe,
+}
+
+// HasSetupAssistant reports whether the install flow for this version
+// drives through Setup Assistant instead of using HeadlessSetup.
+func HasSetupAssistant(version string) bool {
+	return version == "tahoe"
 }
 
 // CatalogFor returns the screen catalog for a macOS version codename as

@@ -15,6 +15,7 @@ import (
 // BaseSystem.dmg that boots macOS Recovery, from which the full installer
 // downloads during "Reinstall macOS".
 var recoveryBoardIDs = map[string]string{
+	"tahoe":      "Mac-CFF7D910A743CAAF",
 	"sequoia":    "Mac-7BA5B2D9E42DDD94",
 	"sonoma":     "Mac-827FAC58A8FDFA22",
 	"ventura":    "Mac-4B682C642B45593E",
@@ -23,6 +24,12 @@ var recoveryBoardIDs = map[string]string{
 	"catalina":   "Mac-00BE6ED71E35EB86",
 	"mojave":     "Mac-7BA5B2DFE22DDD8C",
 	"highsierra": "Mac-7BA5B2D9E42DDD94",
+}
+
+// recoveryOSLatest lists versions whose board ID requires os=latest in the
+// POST body. Without it the endpoint falls back to an older macOS.
+var recoveryOSLatest = map[string]bool{
+	"tahoe": true,
 }
 
 // FetchRecoveryImage downloads a BaseSystem.dmg from Apple's Internet
@@ -41,6 +48,9 @@ func FetchRecoveryImage(ctx context.Context, version, dest string, logger *slog.
 	fg := randHex(64)
 
 	body := fmt.Sprintf("cid=%s\nsn=00000000000000000\nbid=%s\nk=%s\nfg=%s", cid, bid, k, fg)
+	if recoveryOSLatest[version] {
+		body += "\nos=latest"
+	}
 
 	// Step 1: POST to get session cookie (returns 401).
 	session, err := recoverySession(ctx, body)
